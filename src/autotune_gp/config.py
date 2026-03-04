@@ -45,9 +45,11 @@ class DataCfg:
 
 @dataclass
 class WeightsCfg:
-    variables: Dict[str, float] # keys must match preprocess.variables
+    variables: Dict[str, float]         # keys must match preprocess.variables
     zrg: Dict[str, float]
     dy: Dict[str, float]
+    zonal_weights: Optional[List[float]] = None    # per-zone sample weights (len=n_zonal); None = uniform
+    regional_weights: Optional[List[float]] = None # per-region sample weights (len=n_regions); None = uniform
 
 @dataclass
 class OptimizeCfg:
@@ -58,6 +60,7 @@ class OptimizeCfg:
     bounds: Dict[str, float]
     n_params: int
     max_workers: Optional[int] = None
+    param_ordering_constraints: Optional[List[List[str]]] = None  # [[low_param, high_param], ...]
 
 @dataclass
 class RuntimeCfg:
@@ -83,7 +86,14 @@ def load_config(path: str | Path) -> Config:
     paths_raw.setdefault("preprocess_dir", "")
     paths = Paths(**paths_raw)
     data = DataCfg(**raw["data"])
-    weights = WeightsCfg(**raw["weights"])
+    w_raw = dict(raw["weights"])
+    weights = WeightsCfg(
+        variables=w_raw["variables"],
+        zrg=w_raw["zrg"],
+        dy=w_raw["dy"],
+        zonal_weights=w_raw.get("zonal_weights", None),
+        regional_weights=w_raw.get("regional_weights", None),
+    )
 
     opt = raw["optimize"]
     optimize = OptimizeCfg(
@@ -94,6 +104,7 @@ def load_config(path: str | Path) -> Config:
         bounds=dict(opt["bounds"]),
         n_params=int(opt["n_params"]),
         max_workers=opt.get("max_workers", None),
+        param_ordering_constraints=opt.get("param_ordering_constraints", None),
     )
 
     rt = raw.get("runtime", {})

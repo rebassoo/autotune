@@ -38,7 +38,7 @@ from autotune_gp.backend import get_backend
 from autotune_gp.io import load_obs, load_gp_proj, split_zrg_obs
 from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_obs
 from autotune_gp.gp import GPWrapper
-from autotune_gp.cost import zrg_cost_function_rmse_like_reference
+from autotune_gp.cost import zrg_cost_function_mae_weighted
 from autotune_gp.optimize import optimize_parallel
 from autotune_gp.evaluate import run_kfold_evaluation
 
@@ -163,19 +163,34 @@ def run_stage2(cfg):
         gp.train()
 
     print("=== Stage 2: Optimize ===")
-    backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)
-    n_regions = len(cfg.data.regions_list)
-    n_zonal   = int(cfg.data.n_zonal)
-    var_w     = cfg.weights.variables
-    zrg_w     = cfg.weights.zrg
-    dy_w      = cfg.weights.dy
+    backend          = get_backend(cfg.runtime.backend, cfg.runtime.device)
+    n_regions        = len(cfg.data.regions_list)
+    n_zonal          = int(cfg.data.n_zonal)
+    var_w            = cfg.weights.variables
+    zrg_w            = cfg.weights.zrg
+    dy_w             = cfg.weights.dy
+    zonal_weights    = cfg.weights.zonal_weights
+    regional_weights = cfg.weights.regional_weights
+
+    # Build parameter ordering constraint index pairs from column names
+    param_names = list(X_train.columns) if hasattr(X_train, "columns") else None
+    constraint_pairs = []
+    for pair in (cfg.optimize.param_ordering_constraints or []):
+        low_name, high_name = pair
+        if param_names and low_name in param_names and high_name in param_names:
+            constraint_pairs.append((param_names.index(low_name), param_names.index(high_name)))
 
     def cost_fn(x):
         x = np.asarray(x, dtype=float)
+        for low_idx, high_idx in constraint_pairs:
+            violation = x[low_idx] - x[high_idx]
+            if violation > 0:
+                return 1e2 + 1e2 * violation
         m, _ = gp.predict(x)
-        return zrg_cost_function_rmse_like_reference(
+        return zrg_cost_function_mae_weighted(
             m, obs_norm, var_w, zrg_w, dy_w,
             n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+            zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
     _, _, csv_path = optimize_parallel(

@@ -2,8 +2,10 @@ paths:
   # Used by autotune-gp optimize (and run_two_stage.py stage 2):
   #   - set these to pre-existing pickles to skip preprocessing, OR
   #   - run_two_stage.py will write new pickles here after preprocessing
-  obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/obs_2025-07-30_09-40-13.pkl
-  gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/GPFlow_save2025-06-12/GP_ZRG_proj_2025-06-12_14-31-26.pkl
+  #obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/obs_2025-07-30_09-40-13.pkl
+  obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/obs_2026-03-01_13-10-41.pkl
+  #gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/GPFlow_save2025-06-12/GP_ZRG_proj_2025-06-12_14-31-26.pkl
+  gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/GP_ZRG_masked_proj_2026-03-01_13-10-41.pkl
   output_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/results
   # Directory where preprocessing writes intermediate and final pickles:
   preprocess_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output
@@ -34,6 +36,9 @@ weights:
   dy:
     DY1: 0.5
     DY2: 0.5
+  # Per-zone/region sample weights for MAE (null = uniform). Length must match n_zonal / n_regions.
+  zonal_weights: null
+  regional_weights: null
 
 optimize:
   seed: 62
@@ -45,6 +50,10 @@ optimize:
     high: 1.0
   n_params: 16
   max_workers: null
+  # Parameter ordering constraints: each pair [low_param, high_param] adds a penalty
+  # if low_param > high_param in the optimized solution.
+  param_ordering_constraints:
+    - [lambda_low, lambda_high]
 
 runtime:
   train_gp: true
