@@ -153,7 +153,8 @@ def run_stage2(cfg):
         run_kfold_evaluation(kfold_data["folds"], train_gp=cfg.runtime.train_gp)
 
     print("=== Stage 2: Normalise (full dataset) ===")
-    _, X_train_norm         = fit_transform_X(X_train)
+    param_bounds = np.array([cfg.optimize.bounds["low"], cfg.optimize.bounds["high"]])
+    _, X_train_norm         = fit_transform_X(X_train, param_bounds=param_bounds)
     Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
     obs_norm = transform_obs(obs_parts, Y_scalers)
 

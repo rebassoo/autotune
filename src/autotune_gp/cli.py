@@ -37,7 +37,8 @@ def main():
     X_train = gp_loaded["X_train"]
     Y_train_ZRG = gp_loaded["Y_train"]
 
-    _, X_train_norm = fit_transform_X(X_train)
+    param_bounds = np.array([cfg.optimize.bounds["low"], cfg.optimize.bounds["high"]])
+    _, X_train_norm = fit_transform_X(X_train, param_bounds=param_bounds)
     Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
     obs_norm = transform_obs(obs_parts, Y_scalers)
 

@@ -2,9 +2,14 @@ from __future__ import annotations
 import numpy as np
 from sklearn import preprocessing
 
-def fit_transform_X(X_train: np.ndarray):
+def fit_transform_X(X_train, param_bounds=None):
+    """Fit MinMaxScaler on param_bounds if provided (shape (2, n_params): [lows, highs]),
+    otherwise fall back to fitting on X_train data range."""
     sc = preprocessing.MinMaxScaler()
-    sc.fit(X_train)
+    if param_bounds is not None:
+        sc.fit(param_bounds)  # shape (2, n_params) -> maps theoretical [low,high] to [0,1]
+    else:
+        sc.fit(X_train)
     return sc, sc.transform(X_train)
 
 def fit_transform_Y(Y_train_ZRG: np.ndarray):

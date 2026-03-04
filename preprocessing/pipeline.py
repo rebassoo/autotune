@@ -31,7 +31,8 @@ DY1_BAD_RUNS = [
     "optmar20day2-fail", "optmar15b", "optmar20day2-ltend",
     "m0230", "optmar20day5",
 ]
-DY2_BAD_RUNS = ["m0230", "optmar20day5", "m0024", "m0025", "m0061", "optmar22hd"]
+DY2_BAD_RUNS = ["m0230", "optmar20day5", "m0024", "m0025", "m0061", "optmar22hd",
+                "optmar15", "optmar20day2"]
 
 REGIONS_LIST = [
     "poles",
@@ -72,6 +73,7 @@ def build_run_list(
         for bad in bad_runs:
             if bad in folders:
                 folders.remove(bad)
+        folders = sorted(folders)
         return folders
 
     def _filter_ice_sed(folders, sim_dir, nc_suffix):
@@ -94,7 +96,9 @@ def build_run_list(
     )
 
     sim_names = [s for s in DY1_sim_names if s in DY2_sim_names]
-    ppe_params = ppe_params_all[ppe_params_all.index.isin(sim_names)]
+    ppe_params = ppe_params_all.loc[sim_names]   # .loc preserves sim_names order
+    assert list(ppe_params.index) == list(sim_names), \
+        "ppe_params row order does not match sim_names"
 
     print(f"DY1 runs: {len(DY1_sim_names)}, DY2 runs: {len(DY2_sim_names)}, "
           f"intersection: {len(sim_names)}")
@@ -218,6 +222,12 @@ def load_and_mask(
         DY1_small.sel(run_label=sim_names)
         .combine_first(DY2_small.sel(run_label=sim_names))
     )
+
+    # Verify run_label ordering matches sim_names throughout
+    assert list(DY1_small.sel(run_label=sim_names).run_label.values) == sim_names, \
+        "DY1 run_label order does not match sim_names"
+    assert list(DY2_small.sel(run_label=sim_names).run_label.values) == sim_names, \
+        "DY2 run_label order does not match sim_names"
 
     return {"ppe_dataset_small": ppe_dataset_small, **obs}
 
@@ -359,7 +369,7 @@ def stack_all_data(
         dfs.append(df)
 
     Y_train_ZRG = np.transpose(np.stack(dfs, axis=0), (1, 2, 0))
-    X_train = ppe_params.to_numpy()
+    X_train = ppe_params   # keep as DataFrame to preserve column names for constraint lookup
 
     print(f"X_train: {X_train.shape}, Y_train_ZRG: {Y_train_ZRG.shape}")
     return X_train, Y_train_ZRG
