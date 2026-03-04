@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+.env
+dist/
+build/
+*.egg-info/
+.DS_Store
+*~
+
+# Data files — keep out of git (too large, machine-specific paths)
+*.pkl
+*.nc
+*.csv
+conversation_*.txt

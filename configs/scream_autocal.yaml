@@ -1,0 +1,99 @@
+paths:
+  # Used by autotune-gp optimize (and run_two_stage.py stage 2):
+  #   - set these to pre-existing pickles to skip preprocessing, OR
+  #   - run_two_stage.py will write new pickles here after preprocessing
+  obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/obs_2025-07-30_09-40-13.pkl
+  gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/GPFlow_save2025-06-12/GP_ZRG_proj_2025-06-12_14-31-26.pkl
+  output_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/results
+  # Directory where preprocessing writes intermediate and final pickles:
+  preprocess_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output
+
+data:
+  # Must match keys in preprocess.variables (order matters for ZRG column layout)
+  n_zonal: 18
+  regions_list:
+    - poles
+    - extratropical_land
+    - extratropical_ocean
+    - tropical_land
+    - ascending_tropical_ocean
+    - descending_tropical_ocean
+  variables: [PCP, TLWP, OSR, OLR]
+
+weights:
+  # Keys must match keys in preprocess.variables
+  variables:
+    PCP: 0.25
+    TLWP: 0.25
+    OSR: 0.25
+    OLR: 0.25
+  zrg:
+    zonal: 0.3333333333
+    regional: 0.3333333333
+    global: 0.3333333333
+  dy:
+    DY1: 0.5
+    DY2: 0.5
+
+optimize:
+  seed: 62
+  n_xstarts: 10
+  niter: 1
+  method: L-BFGS-B
+  bounds:
+    low: 0.0
+    high: 1.0
+  n_params: 16
+  max_workers: null
+
+runtime:
+  train_gp: true
+  backend: numpy   # numpy | torch | cupy
+  device: cpu      # cpu | cuda (torch only)
+
+# ---- Preprocessing inputs (only needed by run_end_to_end.py / run_two_stage.py) ----
+preprocess:
+  params_json: /global/cfs/cdirs/e3sm/jpaige3/ESEm/SCREAM.2024-autocal-00.ne1024pg2-params.json
+  DY1_sim_dir: /pscratch/sd/j/jpaige3/dy1ne1024/
+  DY2_sim_dir: /global/cfs/cdirs/e3smdata/simulations/ecp-autotune/SCREAM.2024-autocal-00.ne1024pg2/
+  DY1_nc_suffix: SCREAM.2024-autocal-00.ne1024pg2/run/output.scream.AutoCal.daily_avg_ne30pg2.AVERAGE.nhours_x24.2016-08-07-00000.nc
+  DY2_nc_suffix: SCREAM.2024-autocal-00.ne1024pg2/run/output.scream.AutoCal.daily_avg_ne30pg2.AVERAGE.nhours_x24.2020-01-26-00000.nc
+  DY1_obs_dir: /global/cfs/cdirs/e3smdata/simulations/ecp-autotune/obs/
+  DY2_obs_dir: /global/cfs/projectdirs/e3smdata/simulations/SCREAM.2024-autocal-00.ne1024pg2/obs/
+  control_file: /global/cfs/projectdirs/e3smdata/simulations/ecp-autotune/SCREAM.2024-autocal-00.ne1024pg2/m0000/SCREAM.2024-autocal-00.ne1024pg2/run/output.scream.AutoCal.daily_avg_ne30pg2.AVERAGE.nhours_x24.2020-01-26-00000.nc
+  regions_file: /global/cfs/projectdirs/e3smdata/simulations/ecp-autotune/regions.nc
+
+  # Target variables — add, remove, or rename entries here to change what is
+  # optimized. Each entry needs a matching weight in weights.variables above.
+  #
+  #   sim_field:       field name in the simulation dataset
+  #   sim_components:  if present, sim_field = sum of these components
+  #   obs_file_DY1/2:  obs filename within DY1_obs_dir / DY2_obs_dir
+  #   obs_nc_var:      netCDF variable name inside the obs file
+  #   obs_scale:       multiply obs values by this factor (unit conversion)
+  variables:
+    PCP:
+      sim_field: precip_total_surf_mass_flux
+      obs_file_DY1: IMERG.precip_total_surf_mass_flux.daily_AVERAGE.ne30pg2.20160807_mahf708.nc
+      obs_file_DY2: IMERG.precip_total_surf_mass_flux.AVERAGE.ne30pg2.20200126.nc
+      obs_nc_var: precip_total_surf_mass_flux
+      obs_scale: 1.0
+    TLWP:
+      sim_field: TotalLiqWaterPath
+      sim_components: [LiqWaterPath, RainWaterPath]
+      obs_file_DY1: mac.clwp-tlwp-wvp.20160807.ne30pg2.nc
+      obs_file_DY2: mac.clwp-tlwp-wvp.20200126.ne30pg2.nc
+      obs_nc_var: tlwp
+      obs_scale: 0.001   # g/m² → kg/m²
+    OSR:
+      sim_field: SW_flux_up_at_model_top
+      obs_file_DY1: CERES.SW_flux_up_at_model_top.daily_AVERAGE.ne30pg2.20160807_mahf708.nc
+      obs_file_DY2: CERES.SW_flux_up_at_model_top.AVERAGE.ne30pg2.20200126.nc
+      obs_nc_var: SW_flux_up_at_model_top
+      obs_scale: 1.0
+    OLR:
+      sim_field: LW_flux_up_at_model_top
+      obs_file_DY1: CERES.LW_flux_up_at_model_top.daily_AVERAGE.ne30pg2.20160807_mahf708.nc
+      obs_file_DY2: CERES.LW_flux_up_at_model_top.AVERAGE.ne30pg2.20200126.nc
+      obs_nc_var: LW_flux_up_at_model_top
+      obs_scale: 1.0

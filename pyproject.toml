@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotune-gp-finn"
+version = "0.3.0"
+description = "Finn's GP surrogate optimizer (CPU/GPU cost backends) with reference script tracked"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "scikit-learn",
+  "pyyaml",
+  "esem",
+]
+
+[project.optional-dependencies]
+torch = ["torch"]
+cupy = ["cupy-cuda12x; platform_system=='Linux'"]
+
+[project.scripts]
+autotune-gp = "autotune_gp.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
