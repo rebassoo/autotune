@@ -100,8 +100,12 @@ def main():
     # Stage 3: Normalise (on full dataset for final surrogate)             #
     # ------------------------------------------------------------------ #
     print("=== Stage 3: Normalise (full dataset) ===")
-    param_bounds = np.array([cfg.optimize.bounds["low"], cfg.optimize.bounds["high"]])
-    X_sc,      X_train_norm   = fit_transform_X(X_train, param_bounds=param_bounds)
+    phys = cfg.optimize.param_physical_bounds
+    if phys and hasattr(X_train, "columns"):
+        param_bounds = np.array([phys[col] for col in X_train.columns])  # (n_params, 2)
+        X_sc, X_train_norm = fit_transform_X(X_train, param_bounds=param_bounds.T)
+    else:
+        X_sc, X_train_norm = fit_transform_X(X_train)
     Y_scalers, Y_train_norm   = fit_transform_Y(Y_train_ZRG)
     obs_norm = transform_obs(obs_parts, Y_scalers)
 

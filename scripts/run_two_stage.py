@@ -3,8 +3,10 @@ Two-stage pipeline: preprocessing → save to disk → evaluation → surrogate 
 
 Stage 1 writes pickles to cfg.paths.preprocess_dir:
     obs.pkl        {'zrg_obs': pd.DataFrame}         (readable by load_obs)
-    gp_proj.pkl    {'X_train': ndarray,               (readable by load_gp_proj)
+    gp_proj.pkl    {'X_train': DataFrame,             (readable by load_gp_proj)
                     'Y_train': ndarray}
+    scalers.pkl    {'X_pipeline': MinMaxScaler,       fitted scalers (physical → ML units)
+                    'Y_pipeline_<VAR>': StandardScaler, ...}
     kfold_data.pkl {'folds': list}                   (k-fold splits for evaluation)
     run_list.pkl   (intermediate)
     zrg_data.pkl   (intermediate; per-variable ZRG DataFrames)
@@ -112,6 +114,22 @@ def run_stage1(cfg):
 
     print(f"  Saved obs.pkl  (zrg_obs shape: {zrg_result['zrg_obs'].shape})")
     print(f"  Saved gp_proj.pkl  (X: {X_train.shape}, Y: {Y_train_ZRG.shape})")
+
+    print("=== Stage 1: Fit and save scalers ===")
+    phys = cfg.optimize.param_physical_bounds
+    if phys and hasattr(X_train, "columns"):
+        param_bounds_arr = np.array([phys[col] for col in X_train.columns])
+        X_sc, _ = fit_transform_X(X_train, param_bounds=param_bounds_arr.T)
+    else:
+        X_sc, _ = fit_transform_X(X_train)
+    Y_scalers, _ = fit_transform_Y(Y_train_ZRG)
+    scalers_dict = {
+        "X_pipeline": X_sc,
+        **{f"Y_pipeline_{v}": Y_scalers[i] for i, v in enumerate(var_names)},
+    }
+    with open(out_dir / "scalers.pkl", "wb") as f:
+        pickle.dump(scalers_dict, f)
+    print(f"  Saved scalers.pkl  (X: MinMaxScaler on bounds, Y: StandardScaler x{len(var_names)})")
     print(f"Stage 1 complete. All outputs in: {out_dir}")
 
 
@@ -153,10 +171,34 @@ def run_stage2(cfg):
         run_kfold_evaluation(kfold_data["folds"], train_gp=cfg.runtime.train_gp)
 
     print("=== Stage 2: Normalise (full dataset) ===")
-    param_bounds = np.array([cfg.optimize.bounds["low"], cfg.optimize.bounds["high"]])
-    _, X_train_norm         = fit_transform_X(X_train, param_bounds=param_bounds)
-    Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
-    obs_norm = transform_obs(obs_parts, Y_scalers)
+    var_names = cfg.data.variables
+    # Try to load saved scalers: first from gp_proj_pkl, then from scalers.pkl
+    X_sc   = gp_loaded.get("X_pipeline")
+    Y_scalers = [gp_loaded.get(f"Y_pipeline_{v}") for v in var_names]
+    if X_sc is None or not all(s is not None for s in Y_scalers):
+        scalers_pkl_path = out_dir / "scalers.pkl"
+        if scalers_pkl_path.exists():
+            with open(scalers_pkl_path, "rb") as f:
+                saved = pickle.load(f)
+            X_sc      = saved.get("X_pipeline")
+            Y_scalers = [saved.get(f"Y_pipeline_{v}") for v in var_names]
+    if X_sc is not None and all(s is not None for s in Y_scalers):
+        X_train_norm  = X_sc.transform(X_train)
+        Y_train_norm  = np.stack(
+            [Y_scalers[j].transform(Y_train_ZRG[:, :, j]) for j in range(len(var_names))],
+            axis=0).transpose(1, 2, 0)
+        obs_norm = transform_obs(obs_parts, Y_scalers)
+        print("  Using saved scalers (exact match with training)")
+    else:
+        print("  Warning: no saved scalers found — refitting from scratch")
+        phys = cfg.optimize.param_physical_bounds
+        if phys and hasattr(X_train, "columns"):
+            param_bounds = np.array([phys[col] for col in X_train.columns])
+            X_sc, X_train_norm = fit_transform_X(X_train, param_bounds=param_bounds.T)
+        else:
+            X_sc, X_train_norm = fit_transform_X(X_train)
+        Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
+        obs_norm = transform_obs(obs_parts, Y_scalers)
 
     print("=== Stage 2: Train GP surrogate (full dataset) ===")
     gp = GPWrapper(X_train_norm, Y_train_norm)

@@ -37,10 +37,36 @@ def main():
     X_train = gp_loaded["X_train"]
     Y_train_ZRG = gp_loaded["Y_train"]
 
-    param_bounds = np.array([cfg.optimize.bounds["low"], cfg.optimize.bounds["high"]])
-    _, X_train_norm = fit_transform_X(X_train, param_bounds=param_bounds)
-    Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
-    obs_norm = transform_obs(obs_parts, Y_scalers)
+    var_names = cfg.data.variables
+    # Try to load saved scalers from gp_proj_pkl, then from preprocess_dir/scalers.pkl
+    X_sc      = gp_loaded.get("X_pipeline")
+    Y_scalers = [gp_loaded.get(f"Y_pipeline_{v}") for v in var_names]
+    if X_sc is None or not all(s is not None for s in Y_scalers):
+        from pathlib import Path as _Path
+        import pickle as _pickle
+        scalers_pkl_path = _Path(cfg.paths.preprocess_dir) / "scalers.pkl"
+        if scalers_pkl_path.exists():
+            with open(scalers_pkl_path, "rb") as f:
+                saved = _pickle.load(f)
+            X_sc      = saved.get("X_pipeline")
+            Y_scalers = [saved.get(f"Y_pipeline_{v}") for v in var_names]
+    if X_sc is not None and all(s is not None for s in Y_scalers):
+        X_train_norm = X_sc.transform(X_train)
+        Y_train_norm = np.stack(
+            [Y_scalers[j].transform(Y_train_ZRG[:, :, j]) for j in range(len(var_names))],
+            axis=0).transpose(1, 2, 0)
+        obs_norm = transform_obs(obs_parts, Y_scalers)
+        print("Using saved scalers (exact match with training)")
+    else:
+        print("Warning: no saved scalers found — refitting from scratch")
+        phys = cfg.optimize.param_physical_bounds
+        if phys and hasattr(X_train, "columns"):
+            param_bounds = np.array([phys[col] for col in X_train.columns])
+            X_sc, X_train_norm = fit_transform_X(X_train, param_bounds=param_bounds.T)
+        else:
+            X_sc, X_train_norm = fit_transform_X(X_train)
+        Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
+        obs_norm = transform_obs(obs_parts, Y_scalers)
 
     gp = GPWrapper(X_train_norm, Y_train_norm)
     if cfg.runtime.train_gp:

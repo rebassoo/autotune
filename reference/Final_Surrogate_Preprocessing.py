@@ -78,8 +78,6 @@ for file in os.listdir(DY2_path):
         DY2_folders.append(file)
 #does not include t0000 as this is pointed to by m0000
 
-print(len(DY2_folders)) 
-
 #removing files that don't have all the data--could be doing this better
 DY2_folders.remove('m0230') #this file is missing 3hr averages
 DY2_folders.remove('optmar20day5') #this file is missing 2nd day daily averages
@@ -89,6 +87,11 @@ DY2_folders.remove('m0024')
 DY2_folders.remove('m0025')
 DY2_folders.remove('m0061')
 DY2_folders.remove('optmar22hd')
+DY2_folders.remove('optmar15')
+DY2_folders.remove('optmar20day2')
+
+print(len(DY2_folders)) 
+DY2_folders = sorted(DY2_folders)
 
 ##adds the path name for all files--only 2nd day, daily averages
 DY2_filename_list = []
@@ -183,6 +186,7 @@ DY1_folders.remove('optmar20day2-ltend')
 DY1_folders.remove('m0230')
 DY1_folders.remove('optmar20day5')
 print(len(DY1_folders))
+DY1_folders = sorted(DY1_folders)
 
 ##adds the path name for all files--only 2nd day, daily averages
 DY1_filename_list = []
@@ -205,7 +209,13 @@ DY1_sim_names = np.array(DY1_folders)[DY1_file_check==True]
 DY1_ppe_params = ppe_params_all[ppe_params_all.index.isin(DY1_sim_names)]
 len(DY1_ppe_params)
 
+#Check for intersection between DY1 and DY2, take only runs in both
+print(list(set(DY1_sim_names) - set(DY2_sim_names))) # should be empty
+print(list(set(DY2_sim_names) - set(DY1_sim_names)))
+sim_names = [sim for sim in DY1_sim_names if sim in DY2_sim_names] 
 
+ppe_params = ppe_params_all[ppe_params_all.index.isin(sim_names)]
+ppe_params
 # In[6]:
 
 
@@ -214,31 +224,35 @@ print(list(set(DY1_sim_names) - set(DY2_sim_names))) # should be empty
 print(list(set(DY2_sim_names) - set(DY1_sim_names)))
 sim_names = [sim for sim in DY1_sim_names if sim in DY2_sim_names] 
 
-ppe_params = ppe_params_all[ppe_params_all.index.isin(sim_names)]
+ppe_params = ppe_params_all.loc[sim_names]
 ppe_params
 
 
-# In[7]:
+# In[25]:
 
 
 # Open and concatenate the datasets along the new 'run_number' dimension
 DY1_concat_dataset = xr.open_mfdataset(DY1_filename_list_filtered, concat_dim='run_label', combine='nested')
-DY1_ppe_dataset_time = DY1_concat_dataset.assign_coords(run_label=('run_label', DY1_sim_names)) # Assign the 'run_number' coordinate
+DY1_sim_names_from_paths = [path.split('/')[-4] for path in DY1_filename_list_filtered]
+DY1_ppe_dataset_time = DY1_concat_dataset.assign_coords(run_label=('run_label', DY1_sim_names_from_paths))
+#DY1_ppe_dataset_time = DY1_concat_dataset.assign_coords(run_label=('run_label', DY1_sim_names)) # Assign the 'run_number' coordinate
 DY1_ppe_dataset = DY1_ppe_dataset_time.squeeze('time')
 
 
-# In[8]:
+# In[27]:
 
 
 # Open and concatenate the datasets along the new 'run_number' dimension
 DY2_concat_dataset = xr.open_mfdataset(DY2_filename_list_filtered, concat_dim='run_label', combine='nested')
-DY2_ppe_dataset_time = DY2_concat_dataset.assign_coords(run_label=('run_label', DY2_sim_names)) # Assign the 'run_number' coordinate
+DY2_sim_names_from_paths = [path.split('/')[-4] for path in DY2_filename_list_filtered]
+DY2_ppe_dataset_time = DY2_concat_dataset.assign_coords(run_label=('run_label', DY2_sim_names_from_paths))
+#DY2_ppe_dataset_time = DY2_concat_dataset.assign_coords(run_label=('run_label', DY2_sim_names)) # Assign the 'run_number' coordinate
 DY2_ppe_dataset = DY2_ppe_dataset_time.squeeze('time')
 
 
 # ##### Observations
 
-# In[9]:
+# In[28]:
 
 
 DY1_obs_dir = '/global/cfs/cdirs/e3smdata/simulations/ecp-autotune/obs/'
@@ -254,7 +268,7 @@ DY1_OSR_obs = xr.open_dataset(DY1_SW_up_obs_file).variables['SW_flux_up_at_model
 DY1_OLR_obs = xr.open_dataset(DY1_LW_obs_file).variables['LW_flux_up_at_model_top'].squeeze('time')
 
 
-# In[10]:
+# In[29]:
 
 
 DY2_obs_dir = '/global/cfs/projectdirs/e3smdata/simulations/SCREAM.2024-autocal-00.ne1024pg2/obs/'
@@ -272,7 +286,7 @@ DY2_OLR_obs = xr.open_dataset(DY2_LW_obs_file).variables['LW_flux_up_at_model_to
 
 # ##### Filter data
 
-# In[13]:
+# In[30]:
 
 
 #filter variables in output - keep only the 4 of interest
@@ -287,7 +301,7 @@ to_leave = ['SW_flux_dn','SW_flux_dn_at_model_bot','SW_flux_up','SW_flux_up_at_m
 'avg_count_ncol_lev', 'avg_count_ncol_dim', 'area', 'lat', 'lon']
 
 
-# In[14]:
+# In[31]:
 
 
 DY1_ppe_dataset_small = DY1_ppe_dataset.drop_vars(to_leave)
@@ -297,7 +311,7 @@ DY1_ppe_dataset_small = DY1_ppe_dataset_small.drop_vars('p_levs')
 DY1_ppe_dataset_small = DY1_ppe_dataset_small.rename({var: f"DY1_{var}" for var in DY1_ppe_dataset_small.data_vars})
 
 
-# In[15]:
+# In[32]:
 
 
 DY2_ppe_dataset_small = DY2_ppe_dataset.drop_vars(to_leave)
@@ -305,6 +319,14 @@ DY2_ppe_dataset_small['TotalLiqWaterPath'] = (DY2_ppe_dataset_small.LiqWaterPath
 #ppe_dataset_small['precip_total_surf_mass_flux'] = ppe_dataset_small['precip_total_surf_mass_flux']*1e-3*24*3600]
 #DY2_ppe_dataset_small = DY2_ppe_dataset_small.drop_vars('p_levs')
 DY2_ppe_dataset_small = DY2_ppe_dataset_small.rename({var: f"DY2_{var}" for var in DY2_ppe_dataset_small.data_vars})
+
+
+# In[33]:
+
+
+assert list(ppe_params.index) == sim_names
+assert list(DY1_ppe_dataset_small.run_label.values) == sim_names
+assert list(DY2_ppe_dataset_small.run_label.values) == sim_names
 
 #ppe_dataset_small = xr.concat([DY1_ppe_dataset_small, DY2_ppe_dataset_small], dim='run_label')
 ppe_dataset_small = DY1_ppe_dataset_small.sel(run_label=sim_names).combine_first(DY2_ppe_dataset_small.sel(run_label=sim_names))
@@ -380,7 +402,7 @@ float LW_flux_up_at_model_top(time, ncol) ;
 # ##### Mask to observations
 # Observations are available on a subset of grid cells; this will affect averages, so first mask to the subset of grid cells
 
-# In[16]:
+# In[34]:
 
 
 ##two ways to get these masks
@@ -394,7 +416,7 @@ DY2_TLWP_mask = xr.open_dataset(mask_path+'/masks/tlwp_2_output.nc').squeeze('ti
 #len(np.where(((DY1_TLWP_mask.to_dataarray()[0]) == True).values)[0]) - ncol drops from 21600 to 15313
 
 
-# In[17]:
+# In[35]:
 
 
 DY1_ppe_dataset_mask = DY1_ppe_dataset_small.copy(deep=True)
@@ -413,7 +435,7 @@ DY2_ppe_dataset_mask['DY2_SW_flux_up_at_model_top'] = DY2_ppe_dataset_small.DY2_
 DY2_ppe_dataset_mask['DY2_LW_flux_up_at_model_top'] = DY2_ppe_dataset_small.DY2_LW_flux_up_at_model_top.where(np.isnan(DY2_OLR_obs) == False)
 
 
-# In[18]:
+# In[36]:
 
 
 regions_file = xr.open_dataset('/global/cfs/projectdirs/e3smdata/simulations/ecp-autotune/regions.nc')
@@ -425,7 +447,7 @@ lat = control.variables['lat'][:]
 lon = control.variables['lon'][:]
 
 
-# In[19]:
+# In[37]:
 
 
 def zonal_means_native(data, area, lat, lon):
@@ -465,7 +487,7 @@ def global_means_native(data, area): #takes global averages
 
 # Below we are just taking the averages, in a likely not very efficient way... :(
 
-# In[20]:
+# In[38]:
 
 
 DY1_PCP_zonal_data = dict()
@@ -505,7 +527,7 @@ for run in sim_names:
     DY1_OLR_global_data.append(global_means_native(lwflux, area))
 
 
-# In[21]:
+# In[39]:
 
 
 DY2_PCP_zonal_data = dict()
@@ -545,7 +567,7 @@ for run in sim_names:
     DY2_OLR_global_data.append(global_means_native(lwflux, area))
 
 
-# In[22]:
+# In[40]:
 
 
 DY1_PCP_z_df = pd.DataFrame.from_dict(DY1_PCP_zonal_data, orient="index")
@@ -561,7 +583,7 @@ DY2_PCP_zrg_ppedataset["DY2_global"] = DY2_PCP_global_data
 PCP_zrg_ppedataset = pd.concat([DY1_PCP_zrg_ppedataset, DY2_PCP_zrg_ppedataset], axis=1)
 
 
-# In[23]:
+# In[41]:
 
 
 DY1_TLWP_z_df = pd.DataFrame.from_dict(DY1_TLWP_zonal_data, orient="index")
@@ -577,7 +599,7 @@ DY2_TLWP_zrg_ppedataset["DY2_global"] = DY2_TLWP_global_data
 TLWP_zrg_ppedataset = pd.concat([DY1_TLWP_zrg_ppedataset, DY2_TLWP_zrg_ppedataset], axis=1)
 
 
-# In[24]:
+# In[42]:
 
 
 DY1_OSR_z_df = pd.DataFrame.from_dict(DY1_OSR_zonal_data, orient="index")
@@ -593,7 +615,7 @@ DY2_OSR_zrg_ppedataset["DY2_global"] = DY2_OSR_global_data
 OSR_zrg_ppedataset = pd.concat([DY1_OSR_zrg_ppedataset, DY2_OSR_zrg_ppedataset], axis=1)
 
 
-# In[25]:
+# In[43]:
 
 
 DY1_OLR_z_df = pd.DataFrame.from_dict(DY1_OLR_zonal_data, orient="index")
@@ -609,20 +631,29 @@ DY2_OLR_zrg_ppedataset["DY2_global"] = DY2_OLR_global_data
 OLR_zrg_ppedataset = pd.concat([DY1_OLR_zrg_ppedataset, DY2_OLR_zrg_ppedataset], axis=1)
 
 
-# In[26]:
+# In[44]:
 
 
 #### Ordering matters here
 zrg_ppedataset = pd.concat([PCP_zrg_ppedataset, TLWP_zrg_ppedataset, OSR_zrg_ppedataset, OLR_zrg_ppedataset], axis=1) 
 
 
-# In[27]:
+# In[45]:
 
 
 zrg_ppedataset #for both DY1 and DY2, should be 200 wide (2 seasons of 4 variables of geographic averages) and number of runs tall
 
 
-# In[28]:
+# In[46]:
+
+
+assert list(ppe_params.index) == sim_names
+assert list(zrg_ppedataset.index) == sim_names
+assert list(DY1_ppe_dataset_small.run_label.values) == sim_names
+assert list(DY2_ppe_dataset_small.run_label.values) == sim_names
+
+
+# In[47]:
 
 
 #calculating the geographic averages for observations as well
@@ -657,7 +688,7 @@ DY1_OSR_global_obs.append(global_means_native(DY1_OSR_obs, area))
 DY1_OLR_global_obs.append(global_means_native(DY1_OLR_obs, area))
 
 
-# In[29]:
+# In[48]:
 
 
 DY2_PCP_zonal_obs = dict()
@@ -691,7 +722,7 @@ DY2_OSR_global_obs.append(global_means_native(DY2_OSR_obs, area))
 DY2_OLR_global_obs.append(global_means_native(DY2_OLR_obs, area))
 
 
-# In[30]:
+# In[49]:
 
 
 DY1_PCP_obs_z_df = pd.DataFrame.from_dict(DY1_PCP_zonal_obs, orient="index")
@@ -738,7 +769,7 @@ OLR_zrg_obs = pd.concat([DY1_OLR_zrg_obs, DY2_OLR_zrg_obs], axis=1)
 zrg_obs = pd.concat([PCP_zrg_obs, TLWP_zrg_obs, OSR_zrg_obs, OLR_zrg_obs], axis=1) 
 
 
-# In[31]:
+# In[50]:
 
 
 zrg_obs #should just be one row of the observations by 200
@@ -746,19 +777,19 @@ zrg_obs #should just be one row of the observations by 200
 
 # ### Training preparation
 
-# In[34]:
+# In[51]:
 
 
 X_train = ppe_params
 
 
-# In[35]:
+# In[52]:
 
 
 train_run_labels = zrg_ppedataset.index.to_list()
 
 
-# In[36]:
+# In[53]:
 
 
 PCP_train = PCP_zrg_ppedataset #.loc[train_run_labels] #**(1/8)
@@ -784,7 +815,7 @@ OSR_test.columns = OSR_zrg_ppedataset.columns.astype(str)
 OLR_test.columns = OLR_zrg_ppedataset.columns.astype(str)
 
 vars_test_list = [PCP_test, TLWP_test, OSR_test, OLR_test]
-# In[37]:
+# In[54]:
 
 
 #for random forest, no preprocessing will be used
@@ -793,7 +824,7 @@ Y_train_ZRG = np.transpose(Y_train_ZRG, (1, 2, 0))
 Y_train_ZRG.shape
 
 
-# In[38]:
+# In[55]:
 
 
 range_thl2tune = [0.1, 10]
@@ -867,14 +898,14 @@ param_bounds2 = np.array([range_thl2tune,
                    range_max_total_ni,
                    range_ice_sed_knob,
                    range_p3_d_breakup_cutoff])
-# In[39]:
+# In[56]:
 
 
 #Create bounds for minmax scaler -- using full bounds of parameters
 param_bounds = np.array([dict_range_pars[param] for param in ppe_params.columns])
 
 
-# In[63]:
+# In[57]:
 
 
 #transform data
@@ -906,7 +937,7 @@ print(X_train_norm.shape, Y_train_norm.shape)
 
 # #### Employing models
 
-# In[64]:
+# In[58]:
 
 
 print(X_train_norm.shape, Y_train_norm.shape)
@@ -914,7 +945,7 @@ print(X_train_norm.shape, Y_train_norm.shape)
 
 # ##### Model
 
-# In[42]:
+# In[59]:
 
 
 model_gp = gp_model(X_train_norm, Y_train_norm)
@@ -922,7 +953,7 @@ model_gp = gp_model(X_train_norm, Y_train_norm)
 #model_rf = rf_model(X_train.to_numpy(), Y_train_ZRG) #not preprocessed
 
 
-# In[43]:
+# In[60]:
 
 
 model_gp.train()
@@ -930,13 +961,13 @@ model_gp.train()
 
 # #### Saving transforms
 
-# In[65]:
+# In[61]:
 
 
 type(Y_train_norm)
 
 
-# In[66]:
+# In[62]:
 
 
 ### Saving projections both normed and not and R2s
@@ -975,7 +1006,7 @@ with open(GP_proj_filename, 'wb') as f:
     pickle.dump(GP_data_to_save, f)
 
 
-# In[67]:
+# In[63]:
 
 
 ### Saving obs
@@ -998,13 +1029,13 @@ with open(obs_save_filename, 'wb') as f:
 
 # ### In sample $R^2$
 
-# In[46]:
+# In[64]:
 
 
 m_gp, v_gp = model_gp.predict(X_train_norm)
 
 
-# In[47]:
+# In[65]:
 
 
 #vars_list = ['PCP','TLWP', 'OSR', 'OLR']
@@ -1019,7 +1050,7 @@ OSR_v_proj_norm_gp = pd.DataFrame(v_gp[:, :, 2], index = X_train.index)
 OLR_v_proj_norm_gp = pd.DataFrame(v_gp[:, :, 3], index = X_train.index)
 
 
-# In[48]:
+# In[66]:
 
 
 #Normalied space
@@ -1040,7 +1071,7 @@ print('PCP:', PCP_r_squared_vw, 'TLWP:', TLWP_r_squared_vw, 'OSR:', OSR_r_square
 print('PCP:', PCP_rmse, 'TLWP:', TLWP_rmse, 'OSR:', OSR_rmse, 'OLR:', OLR_rmse)
 
 
-# In[49]:
+# In[67]:
 
 
 #Non-normalized space
@@ -1061,7 +1092,7 @@ OLR_v_proj_gp = pd.DataFrame(Y_pipe_sk_ss_OLR.inverse_transform(OLR_v_proj_norm_
 #So inverse_transform would give the wrong result for variance.
 
 
-# In[50]:
+# In[68]:
 
 
 PCP_r_squared_vw_phys = r2_score(PCP_train, PCP_proj_gp, multioutput='variance_weighted') # = 'raw_values')

@@ -5,7 +5,8 @@ paths:
   #obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/obs_2025-07-30_09-40-13.pkl
   obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/obs_2026-03-01_13-10-41.pkl
   #gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/GPFlow_save2025-06-12/GP_ZRG_proj_2025-06-12_14-31-26.pkl
-  gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/GP_ZRG_masked_proj_2026-03-01_13-10-41.pkl
+  #gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/GP_ZRG_masked_proj_2026-03-01_13-10-41.pkl
+  gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/CORRECT_GP_ZRG_masked_proj_2026-03-04_11-36-39.pkl
   output_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/results
   # Directory where preprocessing writes intermediate and final pickles:
   preprocess_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output
@@ -41,7 +42,7 @@ weights:
   regional_weights: null
 
 optimize:
-  seed: 62
+  seed: 50
   n_xstarts: 10
   niter: 1
   method: L-BFGS-B
@@ -54,6 +55,26 @@ optimize:
   # if low_param > high_param in the optimized solution.
   param_ordering_constraints:
     - [lambda_low, lambda_high]
+  # Physical [low, high] bounds for each parameter — used to fit the X MinMaxScaler
+  # so that the normalized space correctly reflects the full allowed parameter range.
+  # Values match dict_range_pars in Final_Surrogate_Preprocessing.py.
+  param_physical_bounds:
+    length_fac:                   [0.1, 10]
+    p3_spa_to_nc:                 [0.1, 10]
+    p3_k_accretion:               [0.01, 100]
+    p3_ice_sed_knob:              [1, 2]
+    thl2tune:                     [0.1, 10]
+    qw2tune:                      [0.1, 10]
+    c_diag_3rd_mom:               [0.1, 10]
+    Ckh:                          [0.1, 1]
+    Ckm:                          [0.1, 1]
+    lambda_low:                   [0.0001, 0.1]
+    lambda_high:                  [0.0001, 0.1]
+    p3_eci:                       [0.1, 1]
+    p3_eri:                       [0.1, 1]
+    p3_dep_nucleation_exponent:   [0.2, 0.304]
+    p3_d_breakup_cutoff:          [0, 0.0005]
+    max_total_ni:                 [500000, 10000000]
 
 runtime:
   train_gp: true

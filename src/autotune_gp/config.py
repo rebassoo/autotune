@@ -61,6 +61,7 @@ class OptimizeCfg:
     n_params: int
     max_workers: Optional[int] = None
     param_ordering_constraints: Optional[List[List[str]]] = None  # [[low_param, high_param], ...]
+    param_physical_bounds: Optional[Dict[str, List[float]]] = None  # {param_name: [low, high]}
 
 @dataclass
 class RuntimeCfg:
@@ -105,6 +106,7 @@ def load_config(path: str | Path) -> Config:
         n_params=int(opt["n_params"]),
         max_workers=opt.get("max_workers", None),
         param_ordering_constraints=opt.get("param_ordering_constraints", None),
+        param_physical_bounds=opt.get("param_physical_bounds", None),
     )
 
     rt = raw.get("runtime", {})
