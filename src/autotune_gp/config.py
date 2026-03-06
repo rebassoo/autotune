@@ -68,6 +68,7 @@ class RuntimeCfg:
     train_gp: bool = True
     backend: BackendName = "numpy"
     device: DeviceName = "cpu"
+    tf_determinism: bool = True
 
 @dataclass
 class Config:
@@ -114,6 +115,7 @@ def load_config(path: str | Path) -> Config:
         train_gp=bool(rt.get("train_gp", True)),
         backend=str(rt.get("backend", "numpy")).lower(),  # type: ignore
         device=str(rt.get("device", "cpu")).lower(),      # type: ignore
+        tf_determinism=bool(rt.get("tf_determinism", True)),
     )
 
     preprocess = None

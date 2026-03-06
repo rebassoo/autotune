@@ -115,7 +115,7 @@ def main():
     print("=== Stage 4: Train GP surrogate (full dataset) ===")
     gp = GPWrapper(X_train_norm, Y_train_norm)
     if cfg.runtime.train_gp:
-        gp.train()
+        gp.train(tf_determinism=cfg.runtime.tf_determinism)
 
     # ------------------------------------------------------------------ #
     # Stage 5: Optimize                                                    #

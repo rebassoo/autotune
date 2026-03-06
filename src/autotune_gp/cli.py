@@ -70,7 +70,7 @@ def main():
 
     gp = GPWrapper(X_train_norm, Y_train_norm)
     if cfg.runtime.train_gp:
-        gp.train()
+        gp.train(tf_determinism=cfg.runtime.tf_determinism)
 
     n_regions        = len(cfg.data.regions_list)
     n_zonal          = int(cfg.data.n_zonal)

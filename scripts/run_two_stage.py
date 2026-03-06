@@ -203,7 +203,7 @@ def run_stage2(cfg):
     print("=== Stage 2: Train GP surrogate (full dataset) ===")
     gp = GPWrapper(X_train_norm, Y_train_norm)
     if cfg.runtime.train_gp:
-        gp.train()
+        gp.train(tf_determinism=cfg.runtime.tf_determinism)
 
     print("=== Stage 2: Optimize ===")
     backend          = get_backend(cfg.runtime.backend, cfg.runtime.device)

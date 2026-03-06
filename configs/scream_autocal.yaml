@@ -86,6 +86,7 @@ runtime:
   train_gp: true
   backend: numpy   # numpy | torch | cupy
   device: cpu      # cpu | cuda (torch only)
+  tf_determinism: true  # enable TF op determinism for reproducible GP training
 
 # ---- Preprocessing inputs (only needed by run_end_to_end.py / run_two_stage.py) ----
 preprocess:
