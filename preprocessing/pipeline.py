@@ -259,7 +259,7 @@ def _regional_means(data, area, regions_file):
 
 
 def _global_mean(data, area):
-    return np.nanmean(data * area) / np.nanmean(area)
+    return np.nansum(data * area) / np.nansum(area)
 
 
 def _zrg_df(z_dict, r_dict, global_val, global_col):
