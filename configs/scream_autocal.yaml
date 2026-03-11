@@ -4,15 +4,15 @@ paths:
   #   - run_two_stage.py will write new pickles here after preprocessing
   #obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/obs_2025-07-30_09-40-13.pkl
   #Latest file from Jenny
-  #obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/obs_2026-03-01_13-10-41.pkl
+  obs_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/obs_2026-03-01_13-10-41.pkl
   #obs_pkl: /pscratch/sd/r/rebassoo/ForJenny/preprocess_output_03-05-1045/obs.pkl
-  obs_pkl: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output/obs.pkl
+  #obs_pkl: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output/obs.pkl
   #gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/TF_saving/GPFlow_save2025-06-12/GP_ZRG_proj_2025-06-12_14-31-26.pkl
   #gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/GP_ZRG_masked_proj_2026-03-01_13-10-41.pkl
   #Latest File from Jenny
-  #gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/CORRECT_GP_ZRG_masked_proj_2026-03-04_11-36-39.pkl
+  gp_proj_pkl: /global/cfs/cdirs/e3sm/jpaige3/ESEm/GP_Saved_Model_Data/CORRECT_GP_ZRG_masked_proj_2026-03-04_11-36-39.pkl
   #gp_proj_pkl: /pscratch/sd/r/rebassoo/ForJenny/preprocess_output_03-05-1045/gp_proj.pkl
-  gp_proj_pkl: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output/gp_proj.pkl
+  #gp_proj_pkl: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output/gp_proj.pkl
   output_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/results
   # Directory where preprocessing writes intermediate and final pickles:
   preprocess_dir: /global/homes/r/rebassoo/work/2026_02_02_Autotuning-Repo/preprocess_output
@@ -49,7 +49,7 @@ weights:
 
 optimize:
   seed: 50
-  n_xstarts: 10
+  n_xstarts: 5
   niter: 1
   method: L-BFGS-B
   bounds:
@@ -86,7 +86,7 @@ runtime:
   train_gp: true
   backend: numpy   # numpy | torch | cupy
   device: cpu      # cpu | cuda (torch only)
-  tf_determinism: true  # enable TF op determinism for reproducible GP training
+  tf_determinism: false  # enable TF op determinism for reproducible GP training (only needed on GPU)
 
 # ---- Preprocessing inputs (only needed by run_end_to_end.py / run_two_stage.py) ----
 preprocess:

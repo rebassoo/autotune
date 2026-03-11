@@ -15,7 +15,8 @@ def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstart
     minimizer_kwargs = {"method": method, "bounds": bounds}
 
     def run_one(x0):
-        res = basinhopping(cost_fn, x0, minimizer_kwargs=minimizer_kwargs, niter=niter)
+        res = basinhopping(cost_fn, x0, minimizer_kwargs=minimizer_kwargs, niter=niter,
+                           seed=seed)
         return np.hstack((res.x, res.fun))
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
