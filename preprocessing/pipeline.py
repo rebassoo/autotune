@@ -271,6 +271,71 @@ def _global_mean(data, area):
     return _safe_weighted_mean(d, a)
 
 
+def drop_nan_zrg_features(zrg_result, var_names, n_zonal, n_regions, regions_list):
+    """
+    Drop ZRG feature columns that are all-NaN across all runs for any variable
+    or in the obs. Prints which bands/regions are dropped.
+
+    Returns updated zrg_result and new n_zonal.
+    """
+    n_per_day = n_zonal + n_regions + 1
+    n_feat = n_per_day * 2
+    n_vars = len(var_names)
+
+    # Build human-readable labels for each feature position
+    lat_bands = np.linspace(-90, 90, n_zonal + 1)
+    zonal_labels = [f"zonal {(lat_bands[i] + lat_bands[i+1]) / 2:.0f}deg"
+                    for i in range(n_zonal)]
+    per_day_labels = zonal_labels + list(regions_list) + ["global"]
+    day_labels = ["DY1"] * n_per_day + ["DY2"] * n_per_day
+    feature_labels = per_day_labels * 2
+
+    # Find feature positions (0..n_feat-1) all-NaN for any variable (sim or obs)
+    nan_cols = set()
+    for var in var_names:
+        df = zrg_result[f"{var}_zrg_ppedataset"]
+        for i in range(n_feat):
+            if df.iloc[:, i].isna().all():
+                nan_cols.add(i)
+    for v_idx in range(n_vars):
+        obs_block = zrg_result["zrg_obs"].iloc[:, v_idx * n_feat:(v_idx + 1) * n_feat]
+        for i in range(n_feat):
+            if obs_block.iloc[:, i].isna().all():
+                nan_cols.add(i)
+
+    if not nan_cols:
+        print("  No all-NaN ZRG feature columns found.")
+        return zrg_result, n_zonal
+
+    sorted_nan = sorted(nan_cols)
+    print(f"  Dropping {len(sorted_nan)} all-NaN ZRG feature column(s):")
+    for i in sorted_nan:
+        nan_vars = [v for v in var_names
+                    if zrg_result[f"{v}_zrg_ppedataset"].iloc[:, i].isna().all()]
+        print(f"    {day_labels[i]} {feature_labels[i]}"
+              f"  (all-NaN for: {', '.join(nan_vars) if nan_vars else 'obs only'})")
+
+    valid = [i for i in range(n_feat) if i not in nan_cols]
+
+    # Update per-variable sim DataFrames
+    updated = dict(zrg_result)
+    for var in var_names:
+        updated[f"{var}_zrg_ppedataset"] = zrg_result[f"{var}_zrg_ppedataset"].iloc[:, valid]
+
+    # Update concatenated zrg_ppedataset and zrg_obs
+    # (layout: n_vars blocks of n_feat columns each)
+    all_drop = sorted({v_idx * n_feat + col for v_idx in range(n_vars) for col in sorted_nan})
+    valid_global = [i for i in range(n_vars * n_feat) if i not in set(all_drop)]
+    updated["zrg_ppedataset"] = zrg_result["zrg_ppedataset"].iloc[:, valid_global]
+    updated["zrg_obs"]        = zrg_result["zrg_obs"].iloc[:, valid_global]
+
+    # New n_zonal = DY1 zonal positions that were not dropped
+    new_n_zonal = len([i for i in range(n_zonal) if i not in nan_cols])
+    print(f"  n_zonal updated: {n_zonal} → {new_n_zonal}")
+
+    return updated, new_n_zonal
+
+
 def _zrg_df(z_dict, r_dict, global_val, global_col):
     df = pd.concat(
         [pd.DataFrame.from_dict(z_dict, orient="index"),

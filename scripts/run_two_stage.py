@@ -48,6 +48,7 @@ from preprocessing.pipeline import (
     build_run_list,
     load_and_mask,
     compute_zrg,
+    drop_nan_zrg_features,
     stack_all_data,
     make_folds,
 )
@@ -95,6 +96,15 @@ def run_stage1(cfg):
     with open(out_dir / "zrg_data.pkl", "wb") as f:
         pickle.dump(zrg_result, f)
     print("  Saved zrg_data.pkl")
+
+    print("=== Stage 1: Drop all-NaN ZRG features ===")
+    zrg_result, _ = drop_nan_zrg_features(
+        zrg_result,
+        var_names=var_names,
+        n_zonal=cfg.data.n_zonal,
+        n_regions=len(cfg.data.regions_list),
+        regions_list=cfg.data.regions_list,
+    )
 
     print("=== Stage 1: Stack training arrays ===")
     X_train, Y_train_ZRG = stack_all_data(zrg_result, run_list["ppe_params"],
@@ -206,9 +216,13 @@ def run_stage2(cfg):
         gp.train(tf_determinism=cfg.runtime.tf_determinism)
 
     print("=== Stage 2: Optimize ===")
-    backend          = get_backend(cfg.runtime.backend, cfg.runtime.device)
-    n_regions        = len(cfg.data.regions_list)
-    n_zonal          = int(cfg.data.n_zonal)
+    backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)
+    n_regions = len(cfg.data.regions_list)
+    # Derive n_zonal from actual data shape in case bands were dropped during stage 1
+    n_zonal   = Y_train_ZRG.shape[1] // 2 - n_regions - 1
+    if n_zonal != int(cfg.data.n_zonal):
+        print(f"  Note: n_zonal={n_zonal} (derived from data shape; "
+              f"config has {cfg.data.n_zonal} — bands were dropped during stage 1)")
     var_w            = cfg.weights.variables
     zrg_w            = cfg.weights.zrg
     dy_w             = cfg.weights.dy
