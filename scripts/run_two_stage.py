@@ -236,7 +236,7 @@ def run_stage2(cfg):
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
-    _, _, csv_path = optimize_parallel(
+    results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,
         n_params=cfg.optimize.n_params,
         bounds_low=cfg.optimize.bounds["low"],
@@ -250,6 +250,25 @@ def run_stage2(cfg):
     )
 
     print(f"Done. Results: {csv_path}")
+
+    if cfg.diagnostics.enabled:
+        from autotune_gp.diagnostics import run_diagnostics
+        diag_dir = Path(cfg.paths.output_dir) / "diagnostics"
+        print(f"=== Stage 2: Diagnostics ===")
+        run_diagnostics(
+            results=results,
+            top_rows=top_rows,
+            gp=gp,
+            Y_train_ZRG=Y_train_ZRG,
+            Y_scalers=Y_scalers,
+            obs_parts=obs_parts,
+            param_names=param_names,
+            var_names=var_names,
+            n_zonal=n_zonal,
+            n_regions=n_regions,
+            regions_list=cfg.data.regions_list,
+            out_dir=diag_dir,
+        )
 
 
 def main():

@@ -68,7 +68,11 @@ class RuntimeCfg:
     train_gp: bool = True
     backend: BackendName = "numpy"
     device: DeviceName = "cpu"
-    tf_determinism: bool = True
+    tf_determinism: bool = False
+
+@dataclass
+class DiagnosticsCfg:
+    enabled: bool = False
 
 @dataclass
 class Config:
@@ -77,6 +81,7 @@ class Config:
     weights: WeightsCfg
     optimize: OptimizeCfg
     runtime: RuntimeCfg
+    diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
     preprocess: Optional[PreprocessCfg] = None
 
 def load_config(path: str | Path) -> Config:
@@ -118,6 +123,9 @@ def load_config(path: str | Path) -> Config:
         tf_determinism=bool(rt.get("tf_determinism", True)),
     )
 
+    diag_raw = raw.get("diagnostics", {})
+    diagnostics = DiagnosticsCfg(enabled=bool(diag_raw.get("enabled", False)))
+
     preprocess = None
     if "preprocess" in raw:
         pp_raw = dict(raw["preprocess"])
@@ -127,4 +135,4 @@ def load_config(path: str | Path) -> Config:
         preprocess = PreprocessCfg(**pp_raw, variables=variables)
 
     return Config(paths=paths, data=data, weights=weights, optimize=optimize,
-                  runtime=runtime, preprocess=preprocess)
+                  runtime=runtime, diagnostics=diagnostics, preprocess=preprocess)

@@ -27,7 +27,7 @@ def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstart
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     csv_path = out_dir / ("results_%d_%d_%s.csv" % (n_xstarts, seed, date_str))
 
     with csv_path.open("w", newline="") as f:

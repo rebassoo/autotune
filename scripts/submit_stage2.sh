@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=5
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 #SBATCH --job-name=autotune-gp-stage2
 #SBATCH --output=logs/autotune-gp-stage2-%j.out
 #SBATCH --error=logs/autotune-gp-stage2-%j.err
