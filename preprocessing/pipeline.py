@@ -235,6 +235,13 @@ def load_and_mask(
 # ---------------------------------------------------------------------------
 # Step 3: Compute ZRG averages
 # ---------------------------------------------------------------------------
+def _safe_weighted_mean(d, a):
+    """Area-weighted mean excluding NaN cells from both numerator and denominator."""
+    valid_a = np.where(np.isnan(d), np.nan, a)
+    denom = np.nansum(valid_a)
+    return np.nansum(d * a) / denom if denom > 0 else np.nan
+
+
 def _zonal_means(data, area, lat):
     lat_bands = np.linspace(-90, 90, 19)
     result = {}
@@ -242,9 +249,8 @@ def _zonal_means(data, area, lat):
         mask = (lat >= lat_bands[i]) & (lat < lat_bands[i + 1]).squeeze()
         d = np.where(mask > 0, data.squeeze(), np.nan)
         a = np.where(mask > 0, area.squeeze(), np.nan)
-        valid_a = np.where(np.isnan(d), np.nan, a)
         center = abs(lat_bands[i] - lat_bands[i + 1]) / 2 + lat_bands[i]
-        result[center] = np.nansum(d * a) / np.nansum(valid_a)
+        result[center] = _safe_weighted_mean(d, a)
     return result
 
 
@@ -255,16 +261,14 @@ def _regional_means(data, area, regions_file):
         mask = region_data[reg].squeeze()
         d = np.where(mask > 0, data.squeeze(), np.nan)
         a = np.where(mask > 0, area.squeeze(), np.nan)
-        valid_a = np.where(np.isnan(d), np.nan, a)
-        result[reg] = np.nansum(d * a) / np.nansum(valid_a)
+        result[reg] = _safe_weighted_mean(d, a)
     return result
 
 
 def _global_mean(data, area):
     d = np.asarray(data).squeeze()
     a = np.asarray(area).squeeze()
-    valid_a = np.where(np.isnan(d), np.nan, a)
-    return np.nansum(d * a) / np.nansum(valid_a)
+    return _safe_weighted_mean(d, a)
 
 
 def _zrg_df(z_dict, r_dict, global_val, global_col):
