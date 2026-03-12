@@ -242,8 +242,9 @@ def _zonal_means(data, area, lat):
         mask = (lat >= lat_bands[i]) & (lat < lat_bands[i + 1]).squeeze()
         d = np.where(mask > 0, data.squeeze(), np.nan)
         a = np.where(mask > 0, area.squeeze(), np.nan)
+        valid_a = np.where(np.isnan(d), np.nan, a)
         center = abs(lat_bands[i] - lat_bands[i + 1]) / 2 + lat_bands[i]
-        result[center] = np.nansum(d * a) / np.nansum(a)
+        result[center] = np.nansum(d * a) / np.nansum(valid_a)
     return result
 
 
@@ -254,12 +255,16 @@ def _regional_means(data, area, regions_file):
         mask = region_data[reg].squeeze()
         d = np.where(mask > 0, data.squeeze(), np.nan)
         a = np.where(mask > 0, area.squeeze(), np.nan)
-        result[reg] = np.nansum(d * a) / np.nansum(a)
+        valid_a = np.where(np.isnan(d), np.nan, a)
+        result[reg] = np.nansum(d * a) / np.nansum(valid_a)
     return result
 
 
 def _global_mean(data, area):
-    return np.nansum(data * area) / np.nansum(area)
+    d = np.asarray(data).squeeze()
+    a = np.asarray(area).squeeze()
+    valid_a = np.where(np.isnan(d), np.nan, a)
+    return np.nansum(d * a) / np.nansum(valid_a)
 
 
 def _zrg_df(z_dict, r_dict, global_val, global_col):
