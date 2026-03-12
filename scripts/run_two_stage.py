@@ -253,7 +253,8 @@ def run_stage2(cfg):
 
     if cfg.diagnostics.enabled:
         from autotune_gp.diagnostics import run_diagnostics
-        diag_dir = Path(cfg.paths.output_dir) / "diagnostics"
+        diag_dir = Path(cfg.diagnostics.output_dir) if cfg.diagnostics.output_dir \
+                   else Path(cfg.paths.output_dir) / "diagnostics"
         print(f"=== Stage 2: Diagnostics ===")
         run_diagnostics(
             results=results,

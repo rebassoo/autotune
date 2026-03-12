@@ -89,7 +89,8 @@ runtime:
   tf_determinism: false  # enable TF op determinism for reproducible GP training (only needed on GPU)
 
 diagnostics:
-  enabled: true  # set true to save barcode + ZRG projection plots to output_dir/diagnostics/
+  enabled: true  # set true to save barcode + ZRG projection plots
+  output_dir: null  # path to save plots; defaults to output_dir/diagnostics/ if null
 
 # ---- Preprocessing inputs (only needed by run_end_to_end.py / run_two_stage.py) ----
 preprocess:

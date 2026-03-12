@@ -73,6 +73,7 @@ class RuntimeCfg:
 @dataclass
 class DiagnosticsCfg:
     enabled: bool = False
+    output_dir: Optional[str] = None  # defaults to paths.output_dir/diagnostics/ if not set
 
 @dataclass
 class Config:
@@ -124,7 +125,10 @@ def load_config(path: str | Path) -> Config:
     )
 
     diag_raw = raw.get("diagnostics", {})
-    diagnostics = DiagnosticsCfg(enabled=bool(diag_raw.get("enabled", False)))
+    diagnostics = DiagnosticsCfg(
+        enabled=bool(diag_raw.get("enabled", False)),
+        output_dir=diag_raw.get("output_dir", None),
+    )
 
     preprocess = None
     if "preprocess" in raw:
