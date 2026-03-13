@@ -143,21 +143,28 @@ def run_stage1(cfg):
     print(f"Stage 1 complete. All outputs in: {out_dir}")
 
 
-def run_stage2(cfg):
+def run_stage2(cfg, _preprocess_pkls=None):
     """K-fold evaluation + surrogate training + optimization.
 
-    Loads from cfg.paths.preprocess_dir if stage 1 has been run there;
-    otherwise falls back to cfg.paths.obs_pkl / cfg.paths.gp_proj_pkl.
-    K-fold evaluation is skipped if kfold_data.pkl is not found.
+    Path priority for obs/gp_proj pickles:
+      1. _preprocess_pkls  — passed explicitly when stage 1 just ran (both-stage mode)
+      2. cfg.paths.obs_pkl / cfg.paths.gp_proj_pkl  — config-specified paths
+      3. preprocess_dir/obs.pkl / gp_proj.pkl  — fallback if config paths absent
+
+    K-fold evaluation is skipped if kfold_data.pkl is not found in preprocess_dir.
     """
     out_dir = Path(cfg.paths.preprocess_dir)
     kfold_pkl = out_dir / "kfold_data.pkl"
 
-    # Prefer preprocess_dir outputs; fall back to cfg.paths (reference pkls)
-    obs_pkl_candidate     = out_dir / "obs.pkl"
-    gp_proj_pkl_candidate = out_dir / "gp_proj.pkl"
-    obs_pkl     = str(obs_pkl_candidate)     if obs_pkl_candidate.exists()     else cfg.paths.obs_pkl
-    gp_proj_pkl = str(gp_proj_pkl_candidate) if gp_proj_pkl_candidate.exists() else cfg.paths.gp_proj_pkl
+    if _preprocess_pkls is not None:
+        obs_pkl     = _preprocess_pkls["obs_pkl"]
+        gp_proj_pkl = _preprocess_pkls["gp_proj_pkl"]
+    elif cfg.paths.obs_pkl and Path(cfg.paths.obs_pkl).exists():
+        obs_pkl     = cfg.paths.obs_pkl
+        gp_proj_pkl = cfg.paths.gp_proj_pkl
+    else:
+        obs_pkl     = str(out_dir / "obs.pkl")
+        gp_proj_pkl = str(out_dir / "gp_proj.pkl")
 
     print(f"=== Stage 2: Load data ===")
     print(f"  obs:     {obs_pkl}")
@@ -309,7 +316,11 @@ def main():
         run_stage2(cfg)
     else:
         run_stage1(cfg)
-        run_stage2(cfg)
+        out_dir = Path(cfg.paths.preprocess_dir)
+        run_stage2(cfg, _preprocess_pkls={
+            "obs_pkl":     str(out_dir / "obs.pkl"),
+            "gp_proj_pkl": str(out_dir / "gp_proj.pkl"),
+        })
 
 
 if __name__ == "__main__":

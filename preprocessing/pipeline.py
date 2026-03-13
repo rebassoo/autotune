@@ -291,24 +291,33 @@ def drop_nan_zrg_features(zrg_result, var_names, n_zonal, n_regions, regions_lis
     feature_labels = per_day_labels * 2
 
     # Find feature positions (0..n_feat-1) all-NaN for any variable (sim or obs)
-    nan_cols = set()
+    raw_nan = set()
     for var in var_names:
         df = zrg_result[f"{var}_zrg_ppedataset"]
         for i in range(n_feat):
             if df.iloc[:, i].isna().all():
-                nan_cols.add(i)
+                raw_nan.add(i)
     for v_idx in range(n_vars):
         obs_block = zrg_result["zrg_obs"].iloc[:, v_idx * n_feat:(v_idx + 1) * n_feat]
         for i in range(n_feat):
             if obs_block.iloc[:, i].isna().all():
-                nan_cols.add(i)
+                raw_nan.add(i)
+
+    # Enforce symmetric dropping: DY1 and DY2 must remain structurally identical.
+    # If position i in DY1 or position i in DY2 is all-NaN, drop both.
+    nan_cols = set()
+    for i in raw_nan:
+        # Determine structural position (0..n_per_day-1)
+        pos = i % n_per_day
+        nan_cols.add(pos)            # DY1 position
+        nan_cols.add(pos + n_per_day)  # DY2 mirror
 
     if not nan_cols:
         print("  No all-NaN ZRG feature columns found.")
         return zrg_result, n_zonal
 
     sorted_nan = sorted(nan_cols)
-    print(f"  Dropping {len(sorted_nan)} all-NaN ZRG feature column(s):")
+    print(f"  Dropping {len(sorted_nan)} all-NaN ZRG feature column(s) (symmetric DY1/DY2):")
     for i in sorted_nan:
         nan_vars = [v for v in var_names
                     if zrg_result[f"{v}_zrg_ppedataset"].iloc[:, i].isna().all()]
@@ -329,7 +338,7 @@ def drop_nan_zrg_features(zrg_result, var_names, n_zonal, n_regions, regions_lis
     updated["zrg_ppedataset"] = zrg_result["zrg_ppedataset"].iloc[:, valid_global]
     updated["zrg_obs"]        = zrg_result["zrg_obs"].iloc[:, valid_global]
 
-    # New n_zonal = DY1 zonal positions that were not dropped
+    # New n_zonal = DY1 zonal positions that were not dropped (DY2 mirrors, so count is same)
     new_n_zonal = len([i for i in range(n_zonal) if i not in nan_cols])
     print(f"  n_zonal updated: {n_zonal} → {new_n_zonal}")
 
