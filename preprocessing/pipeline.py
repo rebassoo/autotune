@@ -271,10 +271,14 @@ def _global_mean(data, area):
     return _safe_weighted_mean(d, a)
 
 
-def drop_nan_zrg_features(zrg_result, var_names, n_zonal, n_regions, regions_list):
+def drop_nan_zrg_features(zrg_result, var_names, n_zonal, n_regions, regions_list,
+                           explicit_drop_zonal=None):
     """
     Drop ZRG feature columns that are all-NaN across all runs for any variable
-    or in the obs. Prints which bands/regions are dropped.
+    or in the obs, plus any zonal bands explicitly listed by centre latitude in
+    explicit_drop_zonal (e.g. [-85, -75, 85]).  Dropping is always symmetric:
+    if a position is removed it is removed from both DY1 and DY2.
+    Prints which bands/regions are dropped.
 
     Returns updated zrg_result and new n_zonal.
     """
@@ -302,6 +306,16 @@ def drop_nan_zrg_features(zrg_result, var_names, n_zonal, n_regions, regions_lis
         for i in range(n_feat):
             if obs_block.iloc[:, i].isna().all():
                 raw_nan.add(i)
+
+    # Add explicitly requested zonal bands (matched by closest centre latitude)
+    if explicit_drop_zonal:
+        lat_bands = np.linspace(-90, 90, n_zonal + 1)
+        centres = np.array([(lat_bands[i] + lat_bands[i + 1]) / 2 for i in range(n_zonal)])
+        for target in explicit_drop_zonal:
+            idx = int(np.argmin(np.abs(centres - target)))
+            raw_nan.add(idx)
+            print(f"  Explicitly dropping zonal band centre {centres[idx]:.0f}° "
+                  f"(requested {target}°)")
 
     # Enforce symmetric dropping: DY1 and DY2 must remain structurally identical.
     # If position i in DY1 or position i in DY2 is all-NaN, drop both.

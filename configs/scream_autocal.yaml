@@ -104,6 +104,10 @@ preprocess:
   control_file: /global/cfs/projectdirs/e3smdata/simulations/ecp-autotune/SCREAM.2024-autocal-00.ne1024pg2/m0000/SCREAM.2024-autocal-00.ne1024pg2/run/output.scream.AutoCal.daily_avg_ne30pg2.AVERAGE.nhours_x24.2020-01-26-00000.nc
   regions_file: /global/cfs/projectdirs/e3smdata/simulations/ecp-autotune/regions.nc
 
+  # Zonal band centre latitudes (degrees) to drop regardless of NaN content.
+  # Use this to exclude bands with too few unmasked points (e.g. polar caps).
+  drop_zonal_bands: [-85, -75, 85]
+
   # Target variables — add, remove, or rename entries here to change what is
   # optimized. Each entry needs a matching weight in weights.variables above.
   #

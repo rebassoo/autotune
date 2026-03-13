@@ -104,6 +104,7 @@ def run_stage1(cfg):
         n_zonal=cfg.data.n_zonal,
         n_regions=len(cfg.data.regions_list),
         regions_list=cfg.data.regions_list,
+        explicit_drop_zonal=pp.drop_zonal_bands,
     )
 
     print("=== Stage 1: Stack training arrays ===")

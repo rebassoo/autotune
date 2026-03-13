@@ -36,6 +36,7 @@ class PreprocessCfg:
     control_file: str                       # provides area / lat / lon
     regions_file: str
     variables: Dict[str, VariableCfg] = field(default_factory=dict)
+    drop_zonal_bands: Optional[List[float]] = None  # band centre latitudes to drop (e.g. [-85, -75, 85])
 
 @dataclass
 class DataCfg:
@@ -136,7 +137,9 @@ def load_config(path: str | Path) -> Config:
         variables = {}
         for var_name, var_raw in pp_raw.pop("variables", {}).items():
             variables[var_name] = VariableCfg(**var_raw)
-        preprocess = PreprocessCfg(**pp_raw, variables=variables)
+        drop_zonal_bands = pp_raw.pop("drop_zonal_bands", None)
+        preprocess = PreprocessCfg(**pp_raw, variables=variables,
+                                   drop_zonal_bands=drop_zonal_bands)
 
     return Config(paths=paths, data=data, weights=weights, optimize=optimize,
                   runtime=runtime, diagnostics=diagnostics, preprocess=preprocess)
