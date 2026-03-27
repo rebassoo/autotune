@@ -33,23 +33,43 @@ def load_all_results(results_dir: str):
         raise FileNotFoundError(f"No results_*.csv files found in {results_dir}")
 
     all_rows = []
+    seeds    = []
     for path in csv_files:
+        # Extract seed from filename: results_{n_xstarts}_{seed}_{datetime}.csv
+        stem = Path(path).stem  # e.g. results_10_50_2026-03-27_12-00-00
+        parts = stem.split("_")
+        try:
+            seed = int(parts[2])
+        except (IndexError, ValueError):
+            seed = -1
+
         with open(path) as f:
             lines = f.readlines()
-        header = lines[0].strip().split(",")
         # columns: rank, params (python list as string), cost
         for line in lines[1:]:
-            # params column may contain commas inside brackets — split carefully
             line = line.strip()
-            # find the list boundaries
             bracket_start = line.index("[")
             bracket_end   = line.rindex("]")
             params = ast.literal_eval(line[bracket_start:bracket_end + 1])
-            cost   = float(line[bracket_end + 2:])  # after '],'
+            cost   = float(line[bracket_end + 2:])
             all_rows.append(params + [cost])
+            seeds.append(seed)
 
     print(f"Loaded {len(all_rows)} results from {len(csv_files)} CSV files")
-    return np.array(all_rows), csv_files
+    return np.array(all_rows), np.array(seeds), csv_files
+
+
+def write_combined_csv(results: np.ndarray, seeds: np.ndarray, param_names, output_path: str):
+    """Write all results sorted by cost (best first) to a combined CSV."""
+    import csv
+    ranked_idx = np.argsort(np.abs(results[:, -1]))
+    with open(output_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["rank", "seed"] + list(param_names) + ["cost"])
+        for rank, idx in enumerate(ranked_idx, 1):
+            row = results[idx]
+            w.writerow([rank, int(seeds[idx])] + list(row[:-1]) + [row[-1]])
+    print(f"Saved {output_path}")
 
 
 def plot_barcode(results: np.ndarray, param_names, output_path: str):
@@ -108,9 +128,12 @@ def main():
     cfg = load_config(args.config)
     param_names = list(cfg.optimize.bounds.keys())
 
-    results, csv_files = load_all_results(args.results_dir)
+    results, seeds, csv_files = load_all_results(args.results_dir)
 
     output = args.output or str(Path(args.results_dir) / "barcode_combined.png")
+    csv_out = str(Path(output).with_suffix(".csv"))
+
+    write_combined_csv(results, seeds, param_names, csv_out)
     plot_barcode(results, param_names, output)
 
 
