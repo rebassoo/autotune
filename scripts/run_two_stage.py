@@ -305,9 +305,17 @@ def main():
         help="Run only stage 1 (preprocess) or stage 2 (surrogate+optimize). "
              "Default: run both.",
     )
+    p.add_argument("--seed",      type=int, default=None,
+                   help="Override optimize.seed from config.")
+    p.add_argument("--n-xstarts", type=int, default=None,
+                   help="Override optimize.n_xstarts from config.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
+    if args.seed is not None:
+        cfg.optimize.seed = args.seed
+    if args.n_xstarts is not None:
+        cfg.optimize.n_xstarts = args.n_xstarts
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
