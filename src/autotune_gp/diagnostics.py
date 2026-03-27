@@ -10,17 +10,22 @@ import numpy as np
 
 
 def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
-                    param_names, var_names, n_zonal, n_regions, regions_list, out_dir):
-    """Generate and save all diagnostic plots to out_dir."""
+                    param_names, var_names, n_zonal, n_regions, regions_list, out_dir,
+                    suffix=""):
+    """Generate and save all diagnostic plots to out_dir.
+
+    suffix is appended to each filename before the extension (e.g. '_seed50'),
+    preventing overwriting when multiple jobs share the same output directory.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    _plot_barcode(results, top_rows, param_names, out_dir)
+    _plot_barcode(results, top_rows, param_names, out_dir, suffix)
     _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
-                          var_names, n_zonal, n_regions, regions_list, out_dir)
+                          var_names, n_zonal, n_regions, regions_list, out_dir, suffix)
 
 
-def _plot_barcode(results, top_rows, param_names, out_dir):
+def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     """Heatmap of normalized parameter values + cost, ranked by cost."""
     ranked = results[top_rows]
     main_params = ranked[:, :-1]         # (n_results, n_params)
@@ -56,14 +61,14 @@ def _plot_barcode(results, top_rows, param_names, out_dir):
     fig.colorbar(im2, ax=ax, fraction=0.025, pad=0.01, label='Cost')
 
     plt.tight_layout()
-    path = out_dir / "barcode_params.png"
+    path = out_dir / f"barcode_params{suffix}.png"
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
 def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
-                           var_names, n_zonal, n_regions, regions_list, out_dir):
+                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix=""):
     """Scatter plot per variable: GP optimal projection vs default (m0000) vs obs."""
     best_params_norm = results[top_rows[0], :-1].reshape(1, -1)
     m_opt, _ = gp.predict(best_params_norm)  # (1, n_feat, n_vars)
@@ -108,7 +113,7 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
         ax.legend(fontsize=8)
 
         plt.tight_layout()
-        path = out_dir / f"zrg_projection_{var}.png"
+        path = out_dir / f"zrg_projection_{var}{suffix}.png"
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  Saved {path}")

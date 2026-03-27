@@ -291,6 +291,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
             n_regions=n_regions,
             regions_list=cfg.data.regions_list,
             out_dir=diag_dir,
+            suffix=f"_seed{cfg.optimize.seed}",
         )
 
 
