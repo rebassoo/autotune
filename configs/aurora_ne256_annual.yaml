@@ -1,0 +1,109 @@
+paths:
+  obs_pkl: null        # set after preprocessing
+  gp_proj_pkl: null    # set after training
+  output_dir: /home/rebassoo/work/2026-04-17-Autotuning/results_ne256
+  preprocess_dir: /home/rebassoo/work/2026-04-17-Autotuning/preprocess_output_ne256
+
+data:
+  n_zonal: 18
+  regions_list:
+    - poles
+    - extratropical_land
+    - extratropical_ocean
+    - tropical_land
+    - ascending_tropical_ocean
+    - descending_tropical_ocean
+  variables: [PCP, TLWP, OSR, OLR]
+
+weights:
+  variables:
+    PCP: 0.25
+    TLWP: 0.25
+    OSR: 0.25
+    OLR: 0.25
+  zrg:
+    zonal: 0.3333333333
+    regional: 0.3333333333
+    global: 0.3333333333
+  dy:
+    ANN: 1.0
+  zonal_weights: null
+  regional_weights: null
+
+optimize:
+  seed: 50
+  n_xstarts: 5
+  niter: 1
+  method: L-BFGS-B
+  bounds:
+    low: 0.0
+    high: 1.0
+  n_params: 19
+  max_workers: null
+  param_ordering_constraints:
+    - [lambda_low, lambda_high]
+  param_physical_bounds:
+    thl2tune:                              [0.1, 10]
+    qw2tune:                               [0.1, 10]
+    length_fac:                            [0.1, 10]
+    c_diag_3rd_mom:                        [0.01, 10]
+    coeff_kh:                              [0.01, 1]
+    coeff_km:                              [0.01, 1]
+    lambda_low:                            [0.0001, 0.1]
+    lambda_high:                           [0.0001, 0.1]
+    spa_ccn_to_nc_factor:                  [100, 5000]
+    cldliq_to_ice_collection_factor:       [0.1, 1]
+    rain_to_ice_collection_factor:         [0.1, 1]
+    accretion_prefactor:                   [0.01, 100]
+    deposition_nucleation_exponent:        [0.2, 0.304]
+    max_total_ni:                          [500000, 10000000]
+    ice_sedimentation_factor:              [0.1, 2]
+    rain_selfcollection_breakup_diameter:  [0, 0.0005]
+    autoconversion_prefactor:              [10, 20000]
+    autoconversion_qc_exponent:            [2, 4]
+    autoconversion_radius:                 [2.0e-05, 5.0e-05]
+
+runtime:
+  train_gp: true
+  backend: numpy
+  device: cpu
+  tf_determinism: false
+
+diagnostics:
+  enabled: true
+  output_dir: null
+
+# ---- Preprocessing inputs (annual-mean mode) ----
+preprocess:
+  params_json: /flare/E3SM_Dec/prod/ppe-20251106/normranked_LH_sampling_base10.json
+  sim_dir: /flare/E3SM_Dec/prod/ppe-20251106/casedirs20251223/
+  nc_glob: "1ma_ne30pg2.AVERAGE.nmonths_x1.*.nc"
+  obs_dir: null   # TODO: set after creating annual-mean obs files
+  control_file: /flare/E3SM_Dec/prod/ppe-20251106/casedirs20251223/001.2025-EACB-v2.ne256.NN_128.nyr_1.3a93ec49ed14/run/1ma_ne30pg2.AVERAGE.nmonths_x1.2019-08-01-00000.nc
+  regions_file: null   # TODO: set after copying regions.nc from Perlmutter
+
+  drop_zonal_bands: [-85, -75, 85]
+
+  variables:
+    PCP:
+      sim_field: precip_total_surf_mass_flux
+      sim_components: [precip_liq_surf_mass_flux, precip_ice_surf_mass_flux]
+      obs_file: null   # TODO: annual_mean_IMERG.precip_total_surf_mass_flux.ne30pg2.201908-202007.nc
+      obs_nc_var: precip_total_surf_mass_flux
+      obs_scale: 1.0
+    TLWP:
+      sim_field: TotalLiqWaterPath
+      sim_components: [LiqWaterPath, RainWaterPath]
+      obs_file: null   # TODO: annual_mean_mac.clwp-tlwp-wvp.ne30pg2.201908-202007.nc
+      obs_nc_var: tlwp
+      obs_scale: 0.001
+    OSR:
+      sim_field: SW_flux_up_at_model_top
+      obs_file: null   # TODO: annual_mean_CERES.SW_flux_up_at_model_top.ne30pg2.201908-202007.nc
+      obs_nc_var: SW_flux_up_at_model_top
+      obs_scale: 1.0
+    OLR:
+      sim_field: LW_flux_up_at_model_top
+      obs_file: null   # TODO: annual_mean_CERES.LW_flux_up_at_model_top.ne30pg2.201908-202007.nc
+      obs_nc_var: LW_flux_up_at_model_top
+      obs_scale: 1.0

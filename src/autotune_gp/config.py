@@ -18,25 +18,33 @@ class Paths:
 class VariableCfg:
     """Configuration for one target variable."""
     sim_field: str              # field name in the simulation dataset
-    obs_file_DY1: str           # obs filename within DY1_obs_dir
-    obs_file_DY2: str           # obs filename within DY2_obs_dir
     obs_nc_var: str             # netCDF variable name inside the obs file
     obs_scale: float = 1.0      # multiply obs values by this (e.g. 0.001 for g→kg)
     sim_components: Optional[List[str]] = None  # if set, sim_field = sum of these
+    # Two-snapshot (DY1/DY2) mode:
+    obs_file_DY1: Optional[str] = None     # obs filename within DY1_obs_dir
+    obs_file_DY2: Optional[str] = None     # obs filename within DY2_obs_dir
+    # Annual-mean mode:
+    obs_file: Optional[str] = None         # obs filename within obs_dir
 
 @dataclass
 class PreprocessCfg:
     params_json: str
-    DY1_sim_dir: str
-    DY2_sim_dir: str
-    DY1_nc_suffix: str
-    DY2_nc_suffix: str
-    DY1_obs_dir: str
-    DY2_obs_dir: str
-    control_file: str                       # provides area / lat / lon
+    control_file: str                        # provides area / lat / lon
     regions_file: str
     variables: Dict[str, VariableCfg] = field(default_factory=dict)
     drop_zonal_bands: Optional[List[float]] = None  # band centre latitudes to drop (e.g. [-85, -75, 85])
+    # Two-snapshot (DY1/DY2) mode:
+    DY1_sim_dir: Optional[str] = None
+    DY2_sim_dir: Optional[str] = None
+    DY1_nc_suffix: Optional[str] = None
+    DY2_nc_suffix: Optional[str] = None
+    DY1_obs_dir: Optional[str] = None
+    DY2_obs_dir: Optional[str] = None
+    # Annual-mean mode:
+    sim_dir: Optional[str] = None           # top-level directory containing case subdirectories
+    nc_glob: Optional[str] = None           # glob within each case's run/ dir (e.g. 1ma_ne30pg2.*.nc)
+    obs_dir: Optional[str] = None           # directory containing annual-mean obs files
 
 @dataclass
 class DataCfg:
