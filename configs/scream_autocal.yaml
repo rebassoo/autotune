@@ -50,7 +50,7 @@ weights:
 optimize:
   seed: 50
   n_xstarts: 5
-  niter: 1
+  niter: 5
   method: L-BFGS-B
   bounds:
     low: 0.0
