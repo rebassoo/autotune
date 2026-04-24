@@ -19,6 +19,7 @@ Run a single file:
 
 ```bash
 python3 -m pytest tests/test_pipeline_generic.py -v
+python3 -m pytest tests/test_optimization.py -v
 ```
 
 ---
@@ -43,6 +44,41 @@ No real data files required — all inputs are synthetic.
 | `TestDropNanExplicit` | `test_explicit_band_dropped_despite_no_nans` | A band listed in `explicit_drop_zonal` is removed even when data is fully finite |
 | | `test_explicit_drop_is_symmetric` | Explicit band removal applies to all snapshots, not just the first |
 | | `test_multiple_explicit_bands` | Two explicit bands are each removed symmetrically across all snapshots |
+
+---
+
+### `test_optimization.py`
+Tests for the optimization pipeline modules. No GP training or real data required.
+
+| Class | Test | What it checks |
+|---|---|---|
+| `TestFitTransformX` | `test_lower_bound_maps_to_zero` | Parameter at its physical lower bound normalises to 0.0 |
+| | `test_upper_bound_maps_to_one` | Parameter at its physical upper bound normalises to 1.0 |
+| | `test_midpoint_maps_to_half` | Midpoint of bounds normalises to 0.5 |
+| | `test_fallback_to_data_range` | Without `param_bounds`, scaler fits to data min/max |
+| | `test_returns_scaler_and_array` | Return type is (scaler, ndarray) |
+| `TestFitTransformY` | `test_output_shape_preserved` | Shape unchanged after StandardScaler normalisation |
+| | `test_zero_mean_per_variable` | Each variable has zero mean after scaling |
+| | `test_unit_variance_per_variable` | Each variable has unit variance after scaling |
+| | `test_returns_correct_number_of_scalers` | One scaler returned per variable |
+| | `test_transform_obs_uses_same_scale_as_Y` | Obs equal to training mean transforms to 0 (same scale as Y) |
+| | `test_transform_obs_output_shape` | Output shape is (1, n_feat, n_vars) |
+| `TestSplitZrgObs` | `test_returns_n_vars_parts` | DataFrame splits into exactly n_vars blocks |
+| | `test_each_part_has_correct_width` | Each block has n_feat columns |
+| | `test_columns_are_strings` | Column labels are cast to str |
+| | `test_values_are_contiguous_blocks` | Blocks preserve column ordering from original DataFrame |
+| `TestCostMAEWeighted` | `test_zero_cost_when_preds_equal_obs` | Cost is exactly 0 when predictions match observations |
+| | `test_positive_cost_for_nonzero_error` | Non-zero error gives positive cost |
+| | `test_uniform_offset_gives_expected_cost` | Uniform offset of δ gives cost = δ analytically |
+| | `test_cost_scales_linearly_with_offset` | Cost scales linearly with error magnitude |
+| | `test_dy_weight_asymmetry` | Higher dy weight on the snapshot with larger error increases cost |
+| | `test_raises_on_wrong_n_obs` | ValueError if n_obs ≠ 1 |
+| | `test_raises_on_wrong_n_vars` | ValueError if n_vars ≠ 4 |
+| | `test_raises_on_wrong_n_feat` | ValueError on ZRG layout mismatch |
+| | `test_finite_output` | Random inputs give a finite scalar |
+| `TestOptimizeParallel` | `test_finds_minimum_of_quadratic` | Finds minimum near [0,0] for x²+y² on [0,1]² |
+| | `test_csv_is_written` | Results CSV is written to output directory |
+| | `test_results_shape` | Results array has shape (n_xstarts, n_params+1) |
 
 ---
 
