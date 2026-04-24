@@ -1,4 +1,4 @@
-name: /pscratch/sd/r/rebassoo/conda/ESEm_env.yml
+name: autotune_env  # perlmutter: /pscratch/sd/r/rebassoo/conda/ESEm_env.yml
 channels:
   - conda-forge
 dependencies:
@@ -303,4 +303,4 @@ dependencies:
       - werkzeug==3.0.3
       - wrapt==1.16.0
       - zict==3.0.0
-prefix: /pscratch/sd/r/rebassoo/conda/ESEm_env.yml
+prefix: /flare/E3SM_Dec/rebassoo/conda/autotune_env  # perlmutter: /pscratch/sd/r/rebassoo/conda/ESEm_env.yml

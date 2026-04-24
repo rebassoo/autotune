@@ -21,11 +21,23 @@ class VariableCfg:
     obs_nc_var: str             # netCDF variable name inside the obs file
     obs_scale: float = 1.0      # multiply obs values by this (e.g. 0.001 for g→kg)
     sim_components: Optional[List[str]] = None  # if set, sim_field = sum of these
-    # Two-snapshot (DY1/DY2) mode:
+    # Generic N-snapshot mode: {snapshot_label: obs_filename}
+    obs_files: Optional[Dict[str, str]] = None
+    # Two-snapshot (DY1/DY2) backward-compat mode:
     obs_file_DY1: Optional[str] = None     # obs filename within DY1_obs_dir
     obs_file_DY2: Optional[str] = None     # obs filename within DY2_obs_dir
-    # Annual-mean mode:
-    obs_file: Optional[str] = None         # obs filename within obs_dir
+
+@dataclass
+class SnapshotCfg:
+    """Configuration for one time snapshot (or averaged period)."""
+    label: str              # e.g. "DY1", "DY2", "ANN"
+    weight: float           # contribution to cost function
+    sim_dir: str            # top-level dir containing member subdirectories
+    obs_dir: str            # dir containing obs files for this snapshot
+    nc_suffix: Optional[str] = None  # single file per member: subdir/nc_suffix
+    nc_glob: Optional[str] = None    # multi-file per member: glob in subdir/run/ (averaged)
+    min_files: int = 1               # minimum matching files required per member
+    max_files: Optional[int] = None  # if set, use only the first max_files sorted files
 
 @dataclass
 class PreprocessCfg:
@@ -33,18 +45,16 @@ class PreprocessCfg:
     control_file: str                        # provides area / lat / lon
     regions_file: str
     variables: Dict[str, VariableCfg] = field(default_factory=dict)
-    drop_zonal_bands: Optional[List[float]] = None  # band centre latitudes to drop (e.g. [-85, -75, 85])
-    # Two-snapshot (DY1/DY2) mode:
+    drop_zonal_bands: Optional[List[float]] = None
+    # Generic N-snapshot mode:
+    snapshots: Optional[List[SnapshotCfg]] = None
+    # Two-snapshot (DY1/DY2) backward-compat mode:
     DY1_sim_dir: Optional[str] = None
     DY2_sim_dir: Optional[str] = None
     DY1_nc_suffix: Optional[str] = None
     DY2_nc_suffix: Optional[str] = None
     DY1_obs_dir: Optional[str] = None
     DY2_obs_dir: Optional[str] = None
-    # Annual-mean mode:
-    sim_dir: Optional[str] = None           # top-level directory containing case subdirectories
-    nc_glob: Optional[str] = None           # glob within each case's run/ dir (e.g. 1ma_ne30pg2.*.nc)
-    obs_dir: Optional[str] = None           # directory containing annual-mean obs files
 
 @dataclass
 class DataCfg:
@@ -146,8 +156,12 @@ def load_config(path: str | Path) -> Config:
         for var_name, var_raw in pp_raw.pop("variables", {}).items():
             variables[var_name] = VariableCfg(**var_raw)
         drop_zonal_bands = pp_raw.pop("drop_zonal_bands", None)
+        snapshots = None
+        if "snapshots" in pp_raw:
+            snapshots = [SnapshotCfg(**s) for s in pp_raw.pop("snapshots")]
         preprocess = PreprocessCfg(**pp_raw, variables=variables,
-                                   drop_zonal_bands=drop_zonal_bands)
+                                   drop_zonal_bands=drop_zonal_bands,
+                                   snapshots=snapshots)
 
     return Config(paths=paths, data=data, weights=weights, optimize=optimize,
                   runtime=runtime, diagnostics=diagnostics, preprocess=preprocess)

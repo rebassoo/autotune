@@ -34,6 +34,11 @@ from preprocessing.pipeline import (
     build_run_list,
     load_and_mask,
     compute_zrg,
+    drop_nan_zrg_features,
+    build_run_list_generic,
+    load_and_mask_generic,
+    compute_zrg_generic,
+    drop_nan_zrg_features_generic,
     stack_all_data,
     make_folds,
 )
@@ -55,31 +60,79 @@ def main():
     # Stage 1: Preprocessing                                               #
     # ------------------------------------------------------------------ #
     print("=== Stage 1: Build run list ===")
-    run_list = build_run_list(
-        params_json=pp.params_json,
-        DY1_sim_dir=pp.DY1_sim_dir,
-        DY1_nc_suffix=pp.DY1_nc_suffix,
-        DY2_sim_dir=pp.DY2_sim_dir,
-        DY2_nc_suffix=pp.DY2_nc_suffix,
-    )
+    if pp.snapshots is not None:
+        param_names = list(cfg.optimize.param_physical_bounds.keys()) \
+                      if cfg.optimize.param_physical_bounds else None
+        run_list = build_run_list_generic(
+            params_json=pp.params_json,
+            snapshots=pp.snapshots,
+            param_names=param_names,
+        )
+    else:
+        run_list = build_run_list(
+            params_json=pp.params_json,
+            DY1_sim_dir=pp.DY1_sim_dir,
+            DY1_nc_suffix=pp.DY1_nc_suffix,
+            DY2_sim_dir=pp.DY2_sim_dir,
+            DY2_nc_suffix=pp.DY2_nc_suffix,
+        )
 
     print("=== Stage 1: Load simulations and observations ===")
-    sim_data = load_and_mask(
-        run_list=run_list,
-        DY1_obs_dir=pp.DY1_obs_dir,
-        DY2_obs_dir=pp.DY2_obs_dir,
-        variables=pp.variables,
-    )
+    if pp.snapshots is not None:
+        sim_data = load_and_mask_generic(
+            run_list=run_list,
+            snapshots=pp.snapshots,
+            variables=pp.variables,
+        )
+    else:
+        sim_data = load_and_mask(
+            run_list=run_list,
+            DY1_obs_dir=pp.DY1_obs_dir,
+            DY2_obs_dir=pp.DY2_obs_dir,
+            variables=pp.variables,
+        )
 
     print("=== Stage 1: Compute ZRG averages ===")
-    zrg_result = compute_zrg(
-        sim_names=run_list["sim_names"],
-        ppe_dataset_small=sim_data["ppe_dataset_small"],
-        obs_dict=sim_data,
-        control_file=pp.control_file,
-        regions_file=pp.regions_file,
-        variables=pp.variables,
-    )
+    if pp.snapshots is not None:
+        zrg_result = compute_zrg_generic(
+            sim_names=run_list["sim_names"],
+            ppe_dataset_small=sim_data["ppe_dataset_small"],
+            obs_dict=sim_data,
+            control_file=pp.control_file,
+            regions_file=pp.regions_file,
+            variables=pp.variables,
+            snapshots=pp.snapshots,
+        )
+    else:
+        zrg_result = compute_zrg(
+            sim_names=run_list["sim_names"],
+            ppe_dataset_small=sim_data["ppe_dataset_small"],
+            obs_dict=sim_data,
+            control_file=pp.control_file,
+            regions_file=pp.regions_file,
+            variables=pp.variables,
+        )
+
+    print("=== Stage 1: Drop all-NaN ZRG features ===")
+    if pp.snapshots is not None:
+        zrg_result, _ = drop_nan_zrg_features_generic(
+            zrg_result,
+            var_names=var_names,
+            n_zonal=cfg.data.n_zonal,
+            n_regions=len(cfg.data.regions_list),
+            regions_list=cfg.data.regions_list,
+            snapshots=pp.snapshots,
+            explicit_drop_zonal=pp.drop_zonal_bands,
+        )
+    else:
+        zrg_result, _ = drop_nan_zrg_features(
+            zrg_result,
+            var_names=var_names,
+            n_zonal=cfg.data.n_zonal,
+            n_regions=len(cfg.data.regions_list),
+            regions_list=cfg.data.regions_list,
+            explicit_drop_zonal=pp.drop_zonal_bands,
+        )
 
     print("=== Stage 1: Stack training arrays ===")
     X_train, Y_train_ZRG = stack_all_data(zrg_result, run_list["ppe_params"],
@@ -123,7 +176,8 @@ def main():
     print("=== Stage 5: Optimize ===")
     backend          = get_backend(cfg.runtime.backend, cfg.runtime.device)
     n_regions        = len(cfg.data.regions_list)
-    n_zonal          = int(cfg.data.n_zonal)
+    n_snaps          = len(pp.snapshots) if pp.snapshots is not None else 2
+    n_zonal          = Y_train_ZRG.shape[1] // n_snaps - n_regions - 1
     var_w            = cfg.weights.variables
     zrg_w            = cfg.weights.zrg
     dy_w             = cfg.weights.dy

@@ -49,6 +49,10 @@ from preprocessing.pipeline import (
     load_and_mask,
     compute_zrg,
     drop_nan_zrg_features,
+    build_run_list_generic,
+    load_and_mask_generic,
+    compute_zrg_generic,
+    drop_nan_zrg_features_generic,
     stack_all_data,
     make_folds,
 )
@@ -65,47 +69,85 @@ def run_stage1(cfg):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=== Stage 1: Build run list ===")
-    run_list = build_run_list(
-        params_json=pp.params_json,
-        DY1_sim_dir=pp.DY1_sim_dir,
-        DY1_nc_suffix=pp.DY1_nc_suffix,
-        DY2_sim_dir=pp.DY2_sim_dir,
-        DY2_nc_suffix=pp.DY2_nc_suffix,
-    )
+    if pp.snapshots is not None:
+        param_names = list(cfg.optimize.param_physical_bounds.keys()) \
+                      if cfg.optimize.param_physical_bounds else None
+        run_list = build_run_list_generic(
+            params_json=pp.params_json,
+            snapshots=pp.snapshots,
+            param_names=param_names,
+        )
+    else:
+        run_list = build_run_list(
+            params_json=pp.params_json,
+            DY1_sim_dir=pp.DY1_sim_dir,
+            DY1_nc_suffix=pp.DY1_nc_suffix,
+            DY2_sim_dir=pp.DY2_sim_dir,
+            DY2_nc_suffix=pp.DY2_nc_suffix,
+        )
     with open(out_dir / "run_list.pkl", "wb") as f:
         pickle.dump(run_list, f)
     print(f"  Saved run_list.pkl  ({len(run_list['sim_names'])} runs)")
 
     print("=== Stage 1: Load simulations and observations ===")
-    sim_data = load_and_mask(
-        run_list=run_list,
-        DY1_obs_dir=pp.DY1_obs_dir,
-        DY2_obs_dir=pp.DY2_obs_dir,
-        variables=pp.variables,
-    )
+    if pp.snapshots is not None:
+        sim_data = load_and_mask_generic(
+            run_list=run_list,
+            snapshots=pp.snapshots,
+            variables=pp.variables,
+        )
+    else:
+        sim_data = load_and_mask(
+            run_list=run_list,
+            DY1_obs_dir=pp.DY1_obs_dir,
+            DY2_obs_dir=pp.DY2_obs_dir,
+            variables=pp.variables,
+        )
 
     print("=== Stage 1: Compute ZRG averages ===")
-    zrg_result = compute_zrg(
-        sim_names=run_list["sim_names"],
-        ppe_dataset_small=sim_data["ppe_dataset_small"],
-        obs_dict=sim_data,
-        control_file=pp.control_file,
-        regions_file=pp.regions_file,
-        variables=pp.variables,
-    )
+    if pp.snapshots is not None:
+        zrg_result = compute_zrg_generic(
+            sim_names=run_list["sim_names"],
+            ppe_dataset_small=sim_data["ppe_dataset_small"],
+            obs_dict=sim_data,
+            control_file=pp.control_file,
+            regions_file=pp.regions_file,
+            variables=pp.variables,
+            snapshots=pp.snapshots,
+        )
+    else:
+        zrg_result = compute_zrg(
+            sim_names=run_list["sim_names"],
+            ppe_dataset_small=sim_data["ppe_dataset_small"],
+            obs_dict=sim_data,
+            control_file=pp.control_file,
+            regions_file=pp.regions_file,
+            variables=pp.variables,
+        )
     with open(out_dir / "zrg_data.pkl", "wb") as f:
         pickle.dump(zrg_result, f)
     print("  Saved zrg_data.pkl")
 
     print("=== Stage 1: Drop all-NaN ZRG features ===")
-    zrg_result, _ = drop_nan_zrg_features(
-        zrg_result,
-        var_names=var_names,
-        n_zonal=cfg.data.n_zonal,
-        n_regions=len(cfg.data.regions_list),
-        regions_list=cfg.data.regions_list,
-        explicit_drop_zonal=pp.drop_zonal_bands,
-    )
+    if pp.snapshots is not None:
+        zrg_result, _ = drop_nan_zrg_features_generic(
+            zrg_result,
+            var_names=var_names,
+            n_zonal=cfg.data.n_zonal,
+            n_regions=len(cfg.data.regions_list),
+            regions_list=cfg.data.regions_list,
+            snapshots=pp.snapshots,
+            explicit_drop_zonal=pp.drop_zonal_bands,
+        )
+    else:
+        zrg_result, _ = drop_nan_zrg_features(
+            zrg_result,
+            var_names=var_names,
+            n_zonal=cfg.data.n_zonal,
+            n_regions=len(cfg.data.regions_list),
+            regions_list=cfg.data.regions_list,
+            explicit_drop_zonal=pp.drop_zonal_bands,
+        )
 
     print("=== Stage 1: Stack training arrays ===")
     X_train, Y_train_ZRG = stack_all_data(zrg_result, run_list["ppe_params"],
@@ -227,7 +269,8 @@ def run_stage2(cfg, _preprocess_pkls=None):
     backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)
     n_regions = len(cfg.data.regions_list)
     # Derive n_zonal from actual data shape in case bands were dropped during stage 1
-    n_zonal   = Y_train_ZRG.shape[1] // 2 - n_regions - 1
+    n_snaps   = len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2
+    n_zonal   = Y_train_ZRG.shape[1] // n_snaps - n_regions - 1
     if n_zonal != int(cfg.data.n_zonal):
         print(f"  Note: n_zonal={n_zonal} (derived from data shape; "
               f"config has {cfg.data.n_zonal} — bands were dropped during stage 1)")
