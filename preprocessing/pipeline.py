@@ -801,7 +801,9 @@ def drop_nan_zrg_features_generic(
     if not nan_cols:
         print("  No all-NaN ZRG feature columns found.")
         updated = dict(zrg_result)
-        updated["_valid_feat_indices"] = list(range(n_feat))
+        updated["_valid_feat_indices"]  = list(range(n_feat))
+        updated["_n_zonal_original"]    = n_zonal
+        updated["_n_per_snap_original"] = n_per_snap
         return updated, n_zonal
 
     sorted_nan = sorted(nan_cols)
@@ -827,7 +829,9 @@ def drop_nan_zrg_features_generic(
     new_n_zonal = len([p for p in range(n_zonal) if p not in dropped_positions])
     print(f"  n_zonal updated: {n_zonal} → {new_n_zonal}")
 
-    updated["_valid_feat_indices"] = valid
+    updated["_valid_feat_indices"]  = valid
+    updated["_n_zonal_original"]    = n_zonal
+    updated["_n_per_snap_original"] = n_per_snap
     return updated, new_n_zonal
 
 

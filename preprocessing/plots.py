@@ -47,11 +47,29 @@ def plot_ppe_zrg(
     n_per_snap = n_feat // n_snaps
     n_zonal    = n_per_snap - n_regions - 1
 
-    # X-tick labels for one snapshot block
-    lat_bands  = np.linspace(-90, 90, n_zonal + 1)
-    zonal_lbl  = [f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}°" for i in range(n_zonal)]
-    pos_labels = zonal_lbl + list(regions_list) + ["Global"]
-    x          = np.arange(n_per_snap)
+    # X-tick labels for one snapshot block.
+    # Prefer stored original-grid metadata so labels stay correct after band-dropping.
+    if "_n_zonal_original" in zrg_result:
+        n_zonal_orig    = zrg_result["_n_zonal_original"]
+        n_per_snap_orig = zrg_result["_n_per_snap_original"]
+        valid_indices   = zrg_result["_valid_feat_indices"]
+        lb_orig         = np.linspace(-90, 90, n_zonal_orig + 1)
+        orig_labels     = (
+            [f"{(lb_orig[i] + lb_orig[i+1]) / 2:.0f}°" for i in range(n_zonal_orig)]
+            + list(regions_list)
+            + ["Global"]
+        )
+        valid_in_snap0 = sorted(i for i in valid_indices if i < n_per_snap_orig)
+        pos_labels     = [orig_labels[i] for i in valid_in_snap0]
+    else:
+        # Fallback for data without drop metadata (e.g. pre-drop zrg_data.pkl)
+        lat_bands  = np.linspace(-90, 90, n_zonal + 1)
+        pos_labels = (
+            [f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}°" for i in range(n_zonal)]
+            + list(regions_list)
+            + ["Global"]
+        )
+    x = np.arange(n_per_snap)
 
     fig, axes = plt.subplots(
         n_vars, 1,
