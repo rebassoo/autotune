@@ -558,7 +558,8 @@ def load_and_mask_generic(
             files = member_files[member]
             ds = xr.open_mfdataset(files, combine="by_coords")
             if "time" in ds.dims:
-                ds = ds.mean(dim="time")
+                weights = ds.time.dt.days_in_month.astype(float)
+                ds = ds.weighted(weights).mean(dim="time")
             member_ds_list.append(ds)
         snap_ds = xr.concat(member_ds_list, dim="run_label").assign_coords(
             run_label=("run_label", sim_names)
@@ -575,12 +576,13 @@ def load_and_mask_generic(
                 obs_filename = var_cfg.obs_files.get(snap.label)
             if obs_filename and snap.obs_dir:
                 obs_path = os.path.join(snap.obs_dir, obs_filename)
-                obs_da = (
-                    xr.open_dataset(obs_path)
-                    .variables[var_cfg.obs_nc_var]
-                    .squeeze()
-                ) * var_cfg.obs_scale
-                obs[key] = obs_da
+                obs_da = xr.open_dataset(obs_path)[var_cfg.obs_nc_var]
+                if "time" in obs_da.dims:
+                    weights = obs_da.time.dt.days_in_month.astype(float)
+                    obs_da = obs_da.weighted(weights).mean(dim="time")
+                else:
+                    obs_da = obs_da.squeeze()
+                obs[key] = obs_da * var_cfg.obs_scale
             else:
                 obs[key] = None
 
