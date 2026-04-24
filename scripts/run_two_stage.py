@@ -65,7 +65,7 @@ from preprocessing.pipeline import (
 )
 
 
-def run_stage1(cfg, preprocess_mode: str = "both"):
+def run_stage1(cfg, preprocess_mode: str = "both", make_plots: bool = False):
     """Preprocessing: build ZRG arrays and save to preprocess_dir.
 
     preprocess_mode:
@@ -210,6 +210,11 @@ def run_stage1(cfg, preprocess_mode: str = "both"):
             explicit_drop_zonal=pp.drop_zonal_bands,
         )
 
+    # Save post-drop ZRG data (used by the standalone plot script)
+    with open(out_dir / "zrg_data_clean.pkl", "wb") as f:
+        pickle.dump(zrg_result, f)
+    print("  Saved zrg_data_clean.pkl")
+
     # Save column mask so obs-only preprocessing can align to the same columns later
     if pp.snapshots is not None:
         n_snaps = len(pp.snapshots)
@@ -224,6 +229,19 @@ def run_stage1(cfg, preprocess_mode: str = "both"):
         with open(out_dir / "column_mask.pkl", "wb") as f:
             pickle.dump(mask_data, f)
         print(f"  Saved column_mask.pkl  ({len(valid_feat_indices)}/{n_feat_original} features kept)")
+
+    # Optional ZRG diagnostic plot
+    if make_plots and pp.snapshots is not None:
+        from preprocessing.plots import plot_ppe_zrg
+        print("=== Stage 1: Plot ZRG diagnostics ===")
+        plot_ppe_zrg(
+            zrg_result=zrg_result,
+            var_names=var_names,
+            n_regions=len(cfg.data.regions_list),
+            regions_list=cfg.data.regions_list,
+            snapshots=pp.snapshots,
+            out_dir=str(out_dir),
+        )
 
     print("=== Stage 1: Stack training arrays ===")
     X_train, Y_train_ZRG = stack_all_data(zrg_result, run_list["ppe_params"],
@@ -438,6 +456,8 @@ def main():
             "to align columns, then saves obs.pkl."
         ),
     )
+    p.add_argument("--plot", action="store_true", default=False,
+                   help="Save a ZRG diagnostic PNG at the end of stage 1.")
     p.add_argument("--seed",      type=int, default=None,
                    help="Override optimize.seed from config.")
     p.add_argument("--n-xstarts", type=int, default=None,
@@ -453,11 +473,11 @@ def main():
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
     if args.stage == 1:
-        run_stage1(cfg, preprocess_mode=args.preprocess_mode)
+        run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
     elif args.stage == 2:
         run_stage2(cfg)
     else:
-        run_stage1(cfg, preprocess_mode=args.preprocess_mode)
+        run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
         out_dir = Path(cfg.paths.preprocess_dir)
         run_stage2(cfg, _preprocess_pkls={
             "obs_pkl":     str(out_dir / "obs.pkl"),
