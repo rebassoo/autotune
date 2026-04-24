@@ -679,6 +679,64 @@ def compute_zrg_generic(
     }
 
 
+def compute_obs_zrg_generic(
+    snapshots,              # List[SnapshotCfg]
+    variables: dict,        # {var_name: VariableCfg}
+    control_file: str,
+    regions_file: str,
+) -> dict:
+    """
+    Load observations and compute ZRG averages without loading any PPE simulations.
+    Raises ValueError if any required obs file is missing or not configured.
+
+    Returns dict with:
+        zrg_obs  — pd.DataFrame with one row ('obs'), columns = ZRG layout for all vars
+    """
+    ctrl = xr.open_dataset(control_file)
+    area = ctrl.variables["area"][:]
+    lat  = ctrl.variables["lat"][:]
+
+    var_names = list(variables.keys())
+
+    obs: Dict[str, Optional[xr.DataArray]] = {}
+    for snap in snapshots:
+        for var_name, var_cfg in variables.items():
+            key = f"{snap.label}_{var_name}_obs"
+            obs_filename = None
+            if snap.obs_dir and var_cfg.obs_files:
+                obs_filename = var_cfg.obs_files.get(snap.label)
+            if not obs_filename or not snap.obs_dir:
+                raise ValueError(
+                    f"Obs file not configured for snapshot '{snap.label}', variable '{var_name}'. "
+                    "Set obs_dir and obs_files in the config before running obs-only preprocessing."
+                )
+            obs_path = os.path.join(snap.obs_dir, obs_filename)
+            obs_da = xr.open_dataset(obs_path)[var_cfg.obs_nc_var]
+            if "time" in obs_da.dims:
+                weights = obs_da.time.dt.days_in_month.astype(float)
+                obs_da = obs_da.weighted(weights).mean(dim="time")
+            else:
+                obs_da = obs_da.squeeze()
+            obs[key] = obs_da * var_cfg.obs_scale
+
+    per_var_zrg_obs: Dict[str, pd.DataFrame] = {}
+    for var_name in var_names:
+        snap_obs_dfs = []
+        for snap in snapshots:
+            obs_da = obs[f"{snap.label}_{var_name}_obs"]
+            snap_obs_dfs.append(_zrg_df(
+                {"obs": _zonal_means(obs_da, area, lat)},
+                {"obs": _regional_means(obs_da, area, regions_file)},
+                [_global_mean(obs_da, area)],
+                f"{snap.label}_global",
+            ))
+        per_var_zrg_obs[var_name] = pd.concat(snap_obs_dfs, axis=1)
+
+    zrg_obs = pd.concat(list(per_var_zrg_obs.values()), axis=1)
+    print(f"zrg_obs (obs-only): {zrg_obs.shape}")
+    return {"zrg_obs": zrg_obs}
+
+
 def drop_nan_zrg_features_generic(
     zrg_result: dict,
     var_names: list,
@@ -687,6 +745,7 @@ def drop_nan_zrg_features_generic(
     regions_list: list,
     snapshots,                              # List[SnapshotCfg]
     explicit_drop_zonal: Optional[List[float]] = None,
+    check_obs_nan: bool = True,
 ) -> Tuple[dict, int]:
     """
     Generic version of drop_nan_zrg_features for N snapshots.
@@ -695,6 +754,9 @@ def drop_nan_zrg_features_generic(
     across all runs or obs for any variable, plus any explicitly listed zonal
     bands.  Dropping is symmetric: if a position is removed in one snapshot
     it is removed from all snapshots.
+
+    check_obs_nan: if False, skip the obs NaN scan (use in PPE-only mode when
+                   zrg_obs is a placeholder of all-NaN rows).
     """
     n_snaps    = len(snapshots)
     n_per_snap = n_zonal + n_regions + 1
@@ -714,11 +776,12 @@ def drop_nan_zrg_features_generic(
             if df.iloc[:, i].isna().all():
                 raw_nan.add(i)
     n_vars = len(var_names)
-    for v_idx in range(n_vars):
-        obs_block = zrg_result["zrg_obs"].iloc[:, v_idx * n_feat:(v_idx + 1) * n_feat]
-        for i in range(n_feat):
-            if obs_block.iloc[:, i].isna().all():
-                raw_nan.add(i)
+    if check_obs_nan:
+        for v_idx in range(n_vars):
+            obs_block = zrg_result["zrg_obs"].iloc[:, v_idx * n_feat:(v_idx + 1) * n_feat]
+            for i in range(n_feat):
+                if obs_block.iloc[:, i].isna().all():
+                    raw_nan.add(i)
 
     if explicit_drop_zonal:
         centres = np.array([(lat_bands[i] + lat_bands[i + 1]) / 2 for i in range(n_zonal)])
@@ -737,7 +800,9 @@ def drop_nan_zrg_features_generic(
 
     if not nan_cols:
         print("  No all-NaN ZRG feature columns found.")
-        return zrg_result, n_zonal
+        updated = dict(zrg_result)
+        updated["_valid_feat_indices"] = list(range(n_feat))
+        return updated, n_zonal
 
     sorted_nan = sorted(nan_cols)
     print(f"  Dropping {len(sorted_nan)} all-NaN ZRG feature column(s) (symmetric across snapshots):")
@@ -762,6 +827,7 @@ def drop_nan_zrg_features_generic(
     new_n_zonal = len([p for p in range(n_zonal) if p not in dropped_positions])
     print(f"  n_zonal updated: {n_zonal} → {new_n_zonal}")
 
+    updated["_valid_feat_indices"] = valid
     return updated, new_n_zonal
 
 

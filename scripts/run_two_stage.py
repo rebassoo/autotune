@@ -22,6 +22,12 @@ Usage:
     python scripts/run_two_stage.py --config configs/scream_autocal.yaml
     python scripts/run_two_stage.py --config configs/scream_autocal.yaml --stage 1
     python scripts/run_two_stage.py --config configs/scream_autocal.yaml --stage 2
+
+    # Process PPE only (obs files not yet available):
+    python scripts/run_two_stage.py --config configs/aurora_ne256_annual.yaml --stage 1 --preprocess-mode ppe
+
+    # Later, once obs files are ready — process obs only and align to existing column mask:
+    python scripts/run_two_stage.py --config configs/aurora_ne256_annual.yaml --stage 1 --preprocess-mode obs
 """
 from __future__ import annotations
 
@@ -52,14 +58,23 @@ from preprocessing.pipeline import (
     build_run_list_generic,
     load_and_mask_generic,
     compute_zrg_generic,
+    compute_obs_zrg_generic,
     drop_nan_zrg_features_generic,
     stack_all_data,
     make_folds,
 )
 
 
-def run_stage1(cfg):
-    """Preprocessing: build ZRG arrays and save to preprocess_dir."""
+def run_stage1(cfg, preprocess_mode: str = "both"):
+    """Preprocessing: build ZRG arrays and save to preprocess_dir.
+
+    preprocess_mode:
+        'both' — process PPE and obs together (default, original behaviour)
+        'ppe'  — process PPE only; saves gp_proj/scalers/kfold/column_mask pickles.
+                 Skips obs. Use on systems where obs files are not yet available.
+        'obs'  — process obs only; loads column_mask.pkl written by a prior 'ppe'
+                 run to align columns, then saves obs.pkl.
+    """
     pp = cfg.preprocess
     if pp is None:
         raise ValueError("Config must include a [preprocess] section for stage 1.")
@@ -68,6 +83,49 @@ def run_stage1(cfg):
     out_dir = Path(cfg.paths.preprocess_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # ------------------------------------------------------------------
+    # Obs-only mode: load obs, apply saved column mask, save obs.pkl
+    # ------------------------------------------------------------------
+    if preprocess_mode == "obs":
+        if pp.snapshots is None:
+            raise ValueError("obs mode requires the generic (snapshots) pipeline.")
+        print("=== Stage 1 (obs-only): Compute obs ZRG averages ===")
+        obs_result = compute_obs_zrg_generic(
+            snapshots=pp.snapshots,
+            variables=pp.variables,
+            control_file=pp.control_file,
+            regions_file=pp.regions_file,
+        )
+        zrg_obs = obs_result["zrg_obs"]
+
+        mask_path = out_dir / "column_mask.pkl"
+        if mask_path.exists():
+            print(f"  Applying column mask from {mask_path}")
+            with open(mask_path, "rb") as f:
+                mask = pickle.load(f)
+            n_feat_orig = mask["n_feat_original"]
+            valid       = mask["valid_feat_indices"]
+            n_vars_mask = mask["n_vars"]
+            if n_vars_mask != len(var_names):
+                raise ValueError(
+                    f"column_mask.pkl has n_vars={n_vars_mask} but config has "
+                    f"{len(var_names)} variables. Re-run PPE preprocessing."
+                )
+            all_valid = [v * n_feat_orig + col for v in range(n_vars_mask) for col in valid]
+            zrg_obs = zrg_obs.iloc[:, all_valid]
+            print(f"  zrg_obs after mask: {zrg_obs.shape}")
+        else:
+            print(f"  No column_mask.pkl found in {out_dir} — using all obs columns as-is.")
+
+        with open(out_dir / "obs.pkl", "wb") as f:
+            pickle.dump({"zrg_obs": zrg_obs}, f)
+        print(f"  Saved obs.pkl  (zrg_obs shape: {zrg_obs.shape})")
+        print(f"Stage 1 (obs-only) complete. Output in: {out_dir}")
+        return
+
+    # ------------------------------------------------------------------
+    # PPE mode or both: build run list, load simulations, compute ZRG
+    # ------------------------------------------------------------------
     print("=== Stage 1: Build run list ===")
     if pp.snapshots is not None:
         param_names = list(cfg.optimize.param_physical_bounds.keys()) \
@@ -130,6 +188,8 @@ def run_stage1(cfg):
 
     print("=== Stage 1: Drop all-NaN ZRG features ===")
     if pp.snapshots is not None:
+        # In PPE-only mode obs rows are all-NaN placeholders; skip obs NaN scan.
+        check_obs = (preprocess_mode == "both")
         zrg_result, _ = drop_nan_zrg_features_generic(
             zrg_result,
             var_names=var_names,
@@ -138,6 +198,7 @@ def run_stage1(cfg):
             regions_list=cfg.data.regions_list,
             snapshots=pp.snapshots,
             explicit_drop_zonal=pp.drop_zonal_bands,
+            check_obs_nan=check_obs,
         )
     else:
         zrg_result, _ = drop_nan_zrg_features(
@@ -149,6 +210,21 @@ def run_stage1(cfg):
             explicit_drop_zonal=pp.drop_zonal_bands,
         )
 
+    # Save column mask so obs-only preprocessing can align to the same columns later
+    if pp.snapshots is not None:
+        n_snaps = len(pp.snapshots)
+        n_per_snap = cfg.data.n_zonal + len(cfg.data.regions_list) + 1
+        n_feat_original = n_per_snap * n_snaps
+        valid_feat_indices = zrg_result.get("_valid_feat_indices", list(range(n_feat_original)))
+        mask_data = {
+            "valid_feat_indices": valid_feat_indices,
+            "n_feat_original":    n_feat_original,
+            "n_vars":             len(var_names),
+        }
+        with open(out_dir / "column_mask.pkl", "wb") as f:
+            pickle.dump(mask_data, f)
+        print(f"  Saved column_mask.pkl  ({len(valid_feat_indices)}/{n_feat_original} features kept)")
+
     print("=== Stage 1: Stack training arrays ===")
     X_train, Y_train_ZRG = stack_all_data(zrg_result, run_list["ppe_params"],
                                           var_names=var_names)
@@ -159,14 +235,14 @@ def run_stage1(cfg):
         pickle.dump({"folds": folds}, f)
     print(f"  Saved kfold_data.pkl  ({len(folds)} folds)")
 
-    # Save in the format expected by load_obs / load_gp_proj
-    with open(out_dir / "obs.pkl", "wb") as f:
-        pickle.dump({"zrg_obs": zrg_result["zrg_obs"]}, f)
     with open(out_dir / "gp_proj.pkl", "wb") as f:
         pickle.dump({"X_train": X_train, "Y_train": Y_train_ZRG}, f)
-
-    print(f"  Saved obs.pkl  (zrg_obs shape: {zrg_result['zrg_obs'].shape})")
     print(f"  Saved gp_proj.pkl  (X: {X_train.shape}, Y: {Y_train_ZRG.shape})")
+
+    if preprocess_mode == "both":
+        with open(out_dir / "obs.pkl", "wb") as f:
+            pickle.dump({"zrg_obs": zrg_result["zrg_obs"]}, f)
+        print(f"  Saved obs.pkl  (zrg_obs shape: {zrg_result['zrg_obs'].shape})")
 
     print("=== Stage 1: Fit and save scalers ===")
     phys = cfg.optimize.param_physical_bounds
@@ -349,6 +425,19 @@ def main():
         help="Run only stage 1 (preprocess) or stage 2 (surrogate+optimize). "
              "Default: run both.",
     )
+    p.add_argument(
+        "--preprocess-mode",
+        choices=["ppe", "obs", "both"],
+        default="both",
+        help=(
+            "Controls what stage 1 preprocesses. "
+            "'both' (default): process PPE and obs together. "
+            "'ppe': process PPE only — saves gp_proj/scalers/kfold/column_mask pickles, "
+            "skips obs.pkl. Use on systems where obs files are not yet available. "
+            "'obs': process obs only — loads column_mask.pkl from a prior 'ppe' run "
+            "to align columns, then saves obs.pkl."
+        ),
+    )
     p.add_argument("--seed",      type=int, default=None,
                    help="Override optimize.seed from config.")
     p.add_argument("--n-xstarts", type=int, default=None,
@@ -364,11 +453,11 @@ def main():
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
     if args.stage == 1:
-        run_stage1(cfg)
+        run_stage1(cfg, preprocess_mode=args.preprocess_mode)
     elif args.stage == 2:
         run_stage2(cfg)
     else:
-        run_stage1(cfg)
+        run_stage1(cfg, preprocess_mode=args.preprocess_mode)
         out_dir = Path(cfg.paths.preprocess_dir)
         run_stage2(cfg, _preprocess_pkls={
             "obs_pkl":     str(out_dir / "obs.pkl"),
