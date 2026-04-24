@@ -432,6 +432,131 @@ def run_stage2(cfg, _preprocess_pkls=None):
         )
 
 
+def run_stage2_multifidelity(cfg):
+    """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
+
+    High-fidelity data comes from cfg.paths.preprocess_dir (same as the
+    single-fidelity path).  Low-fidelity data comes from
+    cfg.multi_fidelity.low_fidelity_dir.
+
+    Y scalers are fitted on high-fidelity data only and applied to both
+    fidelities.  Obs and the cost function are identical to single-fidelity.
+    """
+    from autotune_gp.gp_multifidelity import MultiFidelityGPWrapper, align_Y_to_hf_layout
+
+    mf      = cfg.multi_fidelity
+    out_dir = Path(cfg.paths.preprocess_dir)
+    lf_dir  = Path(mf.low_fidelity_dir)
+    var_names = list(cfg.data.variables)
+
+    # ------------------------------------------------------------------
+    print("=== Stage 2 (multi-fidelity): Load data ===")
+    gp_high    = load_gp_proj(str(out_dir / "gp_proj.pkl"))
+    X_high     = gp_high["X_train"]
+    Y_high     = gp_high["Y_train"]
+    print(f"  HF: X={np.asarray(X_high).shape}, Y={Y_high.shape}")
+
+    gp_low     = load_gp_proj(str(lf_dir / "gp_proj.pkl"))
+    X_low      = gp_low["X_train"]
+    Y_low      = gp_low["Y_train"]
+    print(f"  LF: X={np.asarray(X_low).shape}, Y={Y_low.shape}")
+
+    # ------------------------------------------------------------------
+    hf_mask_path = out_dir / "column_mask.pkl"
+    lf_mask_path = lf_dir  / "column_mask.pkl"
+    if hf_mask_path.exists() and lf_mask_path.exists():
+        print("=== Stage 2 (multi-fidelity): Align LF columns to HF layout ===")
+        with open(hf_mask_path, "rb") as f:
+            hf_mask = pickle.load(f)
+        with open(lf_mask_path, "rb") as f:
+            lf_mask = pickle.load(f)
+        Y_low = align_Y_to_hf_layout(Y_low, lf_mask, hf_mask)
+        print(f"  LF Y after alignment: {Y_low.shape}")
+    elif Y_low.shape[1] != Y_high.shape[1]:
+        raise ValueError(
+            f"LF and HF feature counts differ ({Y_low.shape[1]} vs {Y_high.shape[1]}) "
+            "but no column_mask.pkl found to align them. "
+            "Re-run stage 1 with the current code to generate column_mask.pkl."
+        )
+
+    # ------------------------------------------------------------------
+    print("=== Stage 2 (multi-fidelity): Normalise ===")
+    with open(out_dir / "scalers.pkl", "rb") as f:
+        saved = pickle.load(f)
+    X_sc      = saved["X_pipeline"]
+    Y_scalers = [saved[f"Y_pipeline_{v}"] for v in var_names]
+
+    X_high_norm = X_sc.transform(X_high)
+    X_low_norm  = X_sc.transform(X_low)
+
+    def _norm_Y(Y):
+        return np.stack(
+            [Y_scalers[j].transform(Y[:, :, j]) for j in range(len(var_names))],
+            axis=0,
+        ).transpose(1, 2, 0)
+
+    Y_high_norm = _norm_Y(Y_high)
+    Y_low_norm  = _norm_Y(Y_low)
+    print(f"  HF norm: X={X_high_norm.shape}, Y={Y_high_norm.shape}")
+    print(f"  LF norm: X={X_low_norm.shape},  Y={Y_low_norm.shape}")
+
+    # ------------------------------------------------------------------
+    obs_loaded = load_obs(str(out_dir / "obs.pkl"))
+    zrg_obs    = obs_loaded["zrg_obs"]
+    obs_parts  = split_zrg_obs(zrg_obs, n_vars=len(var_names))
+    obs_norm   = transform_obs(obs_parts, Y_scalers)
+
+    # ------------------------------------------------------------------
+    print("=== Stage 2 (multi-fidelity): Train AR1 GP ===")
+    gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
+    gp.train()
+
+    # ------------------------------------------------------------------
+    print("=== Stage 2 (multi-fidelity): Optimize ===")
+    backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)
+    n_regions = len(cfg.data.regions_list)
+    n_snaps   = len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2
+    n_zonal   = Y_high.shape[1] // n_snaps - n_regions - 1
+    var_w            = cfg.weights.variables
+    zrg_w            = cfg.weights.zrg
+    dy_w             = cfg.weights.dy
+    zonal_weights    = cfg.weights.zonal_weights
+    regional_weights = cfg.weights.regional_weights
+
+    param_names = list(X_high.columns) if hasattr(X_high, "columns") else None
+    constraint_pairs = []
+    for pair in (cfg.optimize.param_ordering_constraints or []):
+        low_name, high_name = pair
+        if param_names and low_name in param_names and high_name in param_names:
+            constraint_pairs.append((param_names.index(low_name), param_names.index(high_name)))
+
+    def cost_fn(x):
+        x = np.asarray(x, dtype=float)
+        for low_idx, high_idx in constraint_pairs:
+            if x[low_idx] - x[high_idx] > 0:
+                return 1e2 + 1e2 * (x[low_idx] - x[high_idx])
+        m, _ = gp.predict(x)
+        return zrg_cost_function_mae_weighted(
+            m, obs_norm, var_w, zrg_w, dy_w,
+            n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+            zonal_weights=zonal_weights, regional_weights=regional_weights,
+        )
+
+    results, top_rows, csv_path = optimize_parallel(
+        cost_fn=cost_fn,
+        n_params=cfg.optimize.n_params,
+        bounds_low=cfg.optimize.bounds["low"],
+        bounds_high=cfg.optimize.bounds["high"],
+        seed=cfg.optimize.seed,
+        n_xstarts=cfg.optimize.n_xstarts,
+        niter=cfg.optimize.niter,
+        method=cfg.optimize.method,
+        out_dir=cfg.paths.output_dir,
+        max_workers=cfg.optimize.max_workers,
+    )
+    print(f"Done. Results: {csv_path}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True)
@@ -472,17 +597,25 @@ def main():
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
+    use_mf = cfg.multi_fidelity is not None
+
     if args.stage == 1:
         run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
     elif args.stage == 2:
-        run_stage2(cfg)
+        if use_mf:
+            run_stage2_multifidelity(cfg)
+        else:
+            run_stage2(cfg)
     else:
         run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
-        out_dir = Path(cfg.paths.preprocess_dir)
-        run_stage2(cfg, _preprocess_pkls={
-            "obs_pkl":     str(out_dir / "obs.pkl"),
-            "gp_proj_pkl": str(out_dir / "gp_proj.pkl"),
-        })
+        if use_mf:
+            run_stage2_multifidelity(cfg)
+        else:
+            out_dir = Path(cfg.paths.preprocess_dir)
+            run_stage2(cfg, _preprocess_pkls={
+                "obs_pkl":     str(out_dir / "obs.pkl"),
+                "gp_proj_pkl": str(out_dir / "gp_proj.pkl"),
+            })
 
 
 if __name__ == "__main__":

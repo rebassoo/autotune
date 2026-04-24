@@ -95,6 +95,18 @@ class DiagnosticsCfg:
     output_dir: Optional[str] = None  # defaults to paths.output_dir/diagnostics/ if not set
 
 @dataclass
+class MultiFidelityCfg:
+    """Optional multi-fidelity GP configuration (emukit AR1).
+
+    When present in the config, stage 2 trains an AR1 model that combines
+    the low-fidelity data (low_fidelity_dir) with the high-fidelity data
+    (paths.preprocess_dir).  Stage 1 and the single-fidelity path are
+    completely unaffected.
+    """
+    low_fidelity_dir: str
+    method: str = "AR1"
+
+@dataclass
 class Config:
     paths: Paths
     data: DataCfg
@@ -103,6 +115,7 @@ class Config:
     runtime: RuntimeCfg
     diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
     preprocess: Optional[PreprocessCfg] = None
+    multi_fidelity: Optional[MultiFidelityCfg] = None
 
 def load_config(path: str | Path) -> Config:
     path = Path(path)
@@ -163,5 +176,9 @@ def load_config(path: str | Path) -> Config:
                                    drop_zonal_bands=drop_zonal_bands,
                                    snapshots=snapshots)
 
+    mf_raw = raw.get("multi_fidelity", None)
+    multi_fidelity = MultiFidelityCfg(**mf_raw) if mf_raw else None
+
     return Config(paths=paths, data=data, weights=weights, optimize=optimize,
-                  runtime=runtime, diagnostics=diagnostics, preprocess=preprocess)
+                  runtime=runtime, diagnostics=diagnostics, preprocess=preprocess,
+                  multi_fidelity=multi_fidelity)
