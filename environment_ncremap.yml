@@ -1,0 +1,5 @@
+name: ncremap_env
+channels:
+  - conda-forge
+dependencies:
+  - nco
