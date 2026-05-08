@@ -3,3 +3,4 @@ channels:
   - conda-forge
 dependencies:
   - nco
+prefix: /flare/E3SM_Dec/rebassoo/conda/ncremap_env

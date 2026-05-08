@@ -15,7 +15,7 @@ MAP=/home/rebassoo/map_ne30pg2_to_ne32pg2.nc
 NPAR=32
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
-mamba activate ncremap_env
+mamba activate /flare/E3SM_Dec/rebassoo/conda/ncremap_env
 
 mkdir -p "${OUTDIR}"
 
