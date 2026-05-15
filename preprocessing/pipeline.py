@@ -513,7 +513,14 @@ def build_run_list_generic(
 
     if params_list_mode:
         def _member_to_idx(name):
-            return int(name.split(".")[0]) - 1   # "001.xxx" → index 0
+            first = name.split(".")[0]
+            try:
+                return int(first) - 1             # "001.xxx" → index 0
+            except ValueError:
+                last = name.rsplit(".", 1)[-1]    # "PPEensemble...m042" → index 42
+                if last.startswith("m"):
+                    return int(last[1:])
+                raise ValueError(f"Cannot extract member index from casedir name: {name}")
 
         indices = [_member_to_idx(m) for m in sim_names]
         data = params_array[indices]
