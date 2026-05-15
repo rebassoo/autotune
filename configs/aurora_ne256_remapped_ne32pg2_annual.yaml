@@ -1,8 +1,8 @@
 paths:
   obs_pkl: null        # set after preprocessing
   gp_proj_pkl: null    # set after training
-  output_dir: /pscratch/sd/r/rebassoo/autotune/results_ne32
-  preprocess_dir: /pscratch/sd/r/rebassoo/autotune/preprocess_output_ne32
+  output_dir: /home/rebassoo/work/2026-04-17-Autotuning/results_ne256_remapped_ne32pg2
+  preprocess_dir: /home/rebassoo/work/2026-04-17-Autotuning/preprocess_output_ne256_remapped_ne32pg2
 
 data:
   n_zonal: 18
@@ -74,38 +74,39 @@ diagnostics:
 
 # ---- Preprocessing inputs ----
 preprocess:
-  params_json: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/normranked_LH_sampling_base10.json
-  control_file: /global/cfs/cdirs/e3sm/beydoun/ne32_ppe_2/PPEensemble_1node_full256.ne32pg2_ne32pg2.F2010-SCREAMv1.20260410.m000/run/1ma_ne32pg2.AVERAGE.nmonths_x1.2020-01-01-00000.nc
-  regions_file: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/1ma_ne32pg2.AVERAGE.201909_202009.mean.omega500_masks.nc
+  params_json: /flare/E3SM_Dec/prod/ppe-20251106/normranked_LH_sampling_base10.json
+  control_file: /flare/E3SM_Dec/rebassoo/remapped_ne32pg2/001.2025-EACB-v2.ne256.NN_128.nyr_1.3a93ec49ed14/run/1ma_ne32pg2.AVERAGE.nmonths_x1.2019-08-01-00000.nc
+  regions_file: /home/rebassoo/work/2026-04-17-Autotuning/1ma_ne32pg2.AVERAGE.201909_202009.mean.omega500_masks.nc
 
   drop_zonal_bands: [-85, -75, 85]
 
   snapshots:
     - label: ANN
       weight: 1.0
-      sim_dir: /global/cfs/cdirs/e3sm/beydoun/ne32_ppe_2/
+      sim_dir: /flare/E3SM_Dec/rebassoo/remapped_ne32pg2/
       obs_dir: null
       nc_glob: "1ma_ne32pg2.AVERAGE.nmonths_x1.*.nc"
-      min_files: 24
-      max_files: 24
+      min_files: 12
+      max_files: 12
 
+  # Obs are handled by perlmutter_ne32_annual.yaml — run this config with --preprocess-mode ppe only
   variables:
     PCP:
       sim_field: precip_total_surf_mass_flux
       sim_components: [precip_liq_surf_mass_flux, precip_ice_surf_mass_flux]
       obs_files:
-        ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/PRECT_IMERG_ne32pg2.nc
-      obs_nc_var: PRECT
-      obs_scale: 1000.0  # PRECT is m/s; multiply by water density (1000 kg/m3) to get kg/m2/s
+        ANN: null
+      obs_nc_var: null
+      obs_scale: 1.0
     OSR:
       sim_field: SW_flux_up_at_model_top
       obs_files:
-        ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/CERES_EBAF_ne32pg2.nc
-      obs_nc_var: toa_sw_all_mon
+        ANN: null
+      obs_nc_var: null
       obs_scale: 1.0
     OLR:
       sim_field: LW_flux_up_at_model_top
       obs_files:
-        ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/CERES_EBAF_ne32pg2.nc
-      obs_nc_var: toa_lw_all_mon
+        ANN: null
+      obs_nc_var: null
       obs_scale: 1.0

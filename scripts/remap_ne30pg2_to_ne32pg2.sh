@@ -33,10 +33,10 @@ for casedir in "${CASEDIRS}"/*/; do
     files=("${casedir}run/"1ma_ne30pg2.AVERAGE.nmonths_x1.*.nc)
     [[ -f "${files[0]}" ]] || continue
     run=$(basename "${casedir}")
-    mkdir -p "${OUTDIR}/${run}"
+    mkdir -p "${OUTDIR}/${run}/run"
     for infile in "${files[@]}"; do
         fname=$(basename "${infile}")
-        outfile="${OUTDIR}/${run}/${fname/ne30pg2/ne32pg2}"
+        outfile="${OUTDIR}/${run}/run/${fname/ne30pg2/ne32pg2}"
         [[ -f "${outfile}" ]] && continue   # skip already-done files
         echo "${infile} ${outfile}"
     done
