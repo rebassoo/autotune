@@ -579,10 +579,13 @@ def load_and_mask_generic(
         for var_name, var_cfg in variables.items():
             key = f"{snap.label}_{var_name}_obs"
             obs_filename = None
-            if snap.obs_dir and var_cfg.obs_files:
+            if var_cfg.obs_files:
                 obs_filename = var_cfg.obs_files.get(snap.label)
-            if obs_filename and snap.obs_dir:
-                obs_path = os.path.join(snap.obs_dir, obs_filename)
+            if obs_filename:
+                obs_path = (
+                    os.path.join(snap.obs_dir, obs_filename)
+                    if snap.obs_dir else obs_filename
+                )
                 obs_da = xr.open_dataset(obs_path)[var_cfg.obs_nc_var]
                 if "time" in obs_da.dims:
                     weights = obs_da.time.dt.days_in_month.astype(float)
@@ -710,14 +713,17 @@ def compute_obs_zrg_generic(
         for var_name, var_cfg in variables.items():
             key = f"{snap.label}_{var_name}_obs"
             obs_filename = None
-            if snap.obs_dir and var_cfg.obs_files:
+            if var_cfg.obs_files:
                 obs_filename = var_cfg.obs_files.get(snap.label)
-            if not obs_filename or not snap.obs_dir:
+            if not obs_filename:
                 raise ValueError(
                     f"Obs file not configured for snapshot '{snap.label}', variable '{var_name}'. "
-                    "Set obs_dir and obs_files in the config before running obs-only preprocessing."
+                    "Set obs_files in the config before running obs-only preprocessing."
                 )
-            obs_path = os.path.join(snap.obs_dir, obs_filename)
+            obs_path = (
+                os.path.join(snap.obs_dir, obs_filename)
+                if snap.obs_dir else obs_filename
+            )
             obs_da = xr.open_dataset(obs_path)[var_cfg.obs_nc_var]
             if "time" in obs_da.dims:
                 weights = obs_da.time.dt.days_in_month.astype(float)

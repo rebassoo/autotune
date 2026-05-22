@@ -2,7 +2,7 @@ paths:
   obs_pkl: null        # set after preprocessing
   gp_proj_pkl: null    # set after training
   output_dir: /pscratch/sd/r/rebassoo/autotune/results_ne32
-  preprocess_dir: /pscratch/sd/r/rebassoo/autotune/preprocess_output_ne32
+  preprocess_dir: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/preprocess_output_ne32
 
 data:
   n_zonal: 18
@@ -96,7 +96,7 @@ preprocess:
       obs_files:
         ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/PRECT_IMERG_ne32pg2.nc
       obs_nc_var: PRECT
-      obs_scale: 1000.0  # PRECT is m/s; multiply by water density (1000 kg/m3) to get kg/m2/s
+      obs_scale: 1.0  # PRECT (m/s) and sim precip fluxes (m/s) are already in the same units
     OSR:
       sim_field: SW_flux_up_at_model_top
       obs_files:
