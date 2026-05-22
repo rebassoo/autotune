@@ -94,18 +94,18 @@ preprocess:
       sim_field: precip_total_surf_mass_flux
       sim_components: [precip_liq_surf_mass_flux, precip_ice_surf_mass_flux]
       obs_files:
-        ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/PRECT_IMERG_ne32pg2.nc
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/PRECT_IMERG_ne32pg2_201908_202007.nc
       obs_nc_var: PRECT
       obs_scale: 1.0  # PRECT (m/s) and sim precip fluxes (m/s) are already in the same units
     OSR:
       sim_field: SW_flux_up_at_model_top
       obs_files:
-        ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/CERES_EBAF_ne32pg2.nc
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
       obs_nc_var: toa_sw_all_mon
       obs_scale: 1.0
     OLR:
       sim_field: LW_flux_up_at_model_top
       obs_files:
-        ANN: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/CERES_EBAF_ne32pg2.nc
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
       obs_nc_var: toa_lw_all_mon
       obs_scale: 1.0

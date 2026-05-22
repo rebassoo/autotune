@@ -1,5 +1,5 @@
 paths:
-  obs_pkl: null        # set after preprocessing (uses ne32 obs)
+  obs_pkl: null        # populated by --preprocess-mode obs (writes to preprocess_dir/obs.pkl)
   gp_proj_pkl: null    # set after training
   output_dir: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/results_multifidelity
   preprocess_dir: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/preprocess_output_ne256_remapped_ne32pg2
@@ -74,3 +74,44 @@ runtime:
 diagnostics:
   enabled: true
   output_dir: null
+
+# ---- Preprocessing inputs (obs-only) ----
+# Run: python scripts/run_two_stage.py --config configs/perlmutter_multifidelity_annual.yaml --stage 1 --preprocess-mode obs
+# This writes obs.pkl into preprocess_dir using the period-matched 2019-2020 obs.
+# The ne256 PPE data (gp_proj.pkl, column_mask.pkl, scalers.pkl) must already exist
+# in preprocess_dir from Aurora preprocessing.
+preprocess:
+  params_json: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/normranked_LH_sampling_base10.json
+  control_file: /global/cfs/cdirs/e3sm/beydoun/ne32_ppe_2/PPEensemble_1node_full256.ne32pg2_ne32pg2.F2010-SCREAMv1.20260410.m000/run/1ma_ne32pg2.AVERAGE.nmonths_x1.2020-01-01-00000.nc
+  regions_file: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/1ma_ne32pg2.AVERAGE.201909_202009.mean.omega500_masks.nc
+
+  drop_zonal_bands: [-85, -75, 85]
+
+  snapshots:
+    - label: ANN
+      weight: 1.0
+      sim_dir: null
+      obs_dir: null
+      nc_glob: null
+      min_files: 1
+
+  variables:
+    PCP:
+      sim_field: precip_total_surf_mass_flux
+      sim_components: [precip_liq_surf_mass_flux, precip_ice_surf_mass_flux]
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/PRECT_IMERG_ne32pg2_201908_202007.nc
+      obs_nc_var: PRECT
+      obs_scale: 1.0
+    OSR:
+      sim_field: SW_flux_up_at_model_top
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
+      obs_nc_var: toa_sw_all_mon
+      obs_scale: 1.0
+    OLR:
+      sim_field: LW_flux_up_at_model_top
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
+      obs_nc_var: toa_lw_all_mon
+      obs_scale: 1.0
