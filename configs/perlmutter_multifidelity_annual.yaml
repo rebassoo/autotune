@@ -1,0 +1,76 @@
+paths:
+  obs_pkl: null        # set after preprocessing (uses ne32 obs)
+  gp_proj_pkl: null    # set after training
+  output_dir: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/results_multifidelity
+  preprocess_dir: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/preprocess_output_ne256_remapped_ne32pg2
+
+multi_fidelity:
+  low_fidelity_dir: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/preprocess_output_ne32
+
+data:
+  n_zonal: 18
+  regions_list:
+    - poles
+    - extratropical_land
+    - extratropical_ocean
+    - tropical_land
+    - ascending_tropical_ocean
+    - descending_tropical_ocean
+  variables: [PCP, OSR, OLR]   # TLWP excluded (obs not yet available)
+
+weights:
+  variables:
+    PCP: 0.3333333333
+    OSR: 0.3333333333
+    OLR: 0.3333333333
+  zrg:
+    zonal: 0.3333333333
+    regional: 0.3333333333
+    global: 0.3333333333
+  dy:
+    ANN: 1.0
+  zonal_weights: null
+  regional_weights: null
+
+optimize:
+  seed: 50
+  n_xstarts: 5
+  niter: 1
+  method: L-BFGS-B
+  bounds:
+    low: 0.0
+    high: 1.0
+  n_params: 19
+  max_workers: null
+  param_ordering_constraints:
+    - [lambda_low, lambda_high]
+  param_physical_bounds:
+    thl2tune:                              [0.1, 10]
+    qw2tune:                               [0.1, 10]
+    length_fac:                            [0.1, 10]
+    c_diag_3rd_mom:                        [0.01, 10]
+    coeff_kh:                              [0.01, 1]
+    coeff_km:                              [0.01, 1]
+    lambda_low:                            [0.0001, 0.1]
+    lambda_high:                           [0.0001, 0.1]
+    spa_ccn_to_nc_factor:                  [100, 5000]
+    cldliq_to_ice_collection_factor:       [0.1, 1]
+    rain_to_ice_collection_factor:         [0.1, 1]
+    accretion_prefactor:                   [0.01, 100]
+    deposition_nucleation_exponent:        [0.2, 0.304]
+    max_total_ni:                          [500000, 10000000]
+    ice_sedimentation_factor:              [0.1, 2]
+    rain_selfcollection_breakup_diameter:  [0, 0.0005]
+    autoconversion_prefactor:              [10, 20000]
+    autoconversion_qc_exponent:            [2, 4]
+    autoconversion_radius:                 [2.0e-05, 5.0e-05]
+
+runtime:
+  train_gp: true
+  backend: numpy
+  device: cpu
+  tf_determinism: false
+
+diagnostics:
+  enabled: true
+  output_dir: null
