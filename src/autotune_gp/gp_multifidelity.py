@@ -122,7 +122,8 @@ class MultiFidelityGPWrapper:
                     [Y_lo[lo_ok],        Y_hi[hi_ok]],
                 )
 
-                kernel = GPy.kern.RBF(input_dim=self.n_params, ARD=True)
+                kernel = GPy.kern.RBF(input_dim=self.n_params, ARD=True,
+                                     active_dims=list(range(self.n_params)))
                 model  = GPyLinearMultiFidelityModel(X_arr, Y_arr, kernel, n_fidelities=2)
                 model.optimize()
 
