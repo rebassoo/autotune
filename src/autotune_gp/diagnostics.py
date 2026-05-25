@@ -11,18 +11,22 @@ import numpy as np
 
 def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                     param_names, var_names, n_zonal, n_regions, regions_list, out_dir,
-                    suffix=""):
+                    suffix="", n_snaps=1, Y_low_ZRG=None):
     """Generate and save all diagnostic plots to out_dir.
 
-    suffix is appended to each filename before the extension (e.g. '_seed50'),
-    preventing overwriting when multiple jobs share the same output directory.
+    suffix      — appended to each filename before the extension.
+    n_snaps     — number of temporal snapshots (1 for ANN, 2 for DY1+DY2, etc.).
+    Y_low_ZRG   — (n_low, n_feat, n_vars) LF training data in physical units;
+                  when provided (multi-fidelity), LF predictions and LF default
+                  are added to the ZRG projection plots.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_barcode(results, top_rows, param_names, out_dir, suffix)
     _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
-                          var_names, n_zonal, n_regions, regions_list, out_dir, suffix)
+                          var_names, n_zonal, n_regions, regions_list, out_dir, suffix,
+                          n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG)
 
 
 def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
@@ -68,48 +72,68 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
 
 
 def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
-                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix=""):
-    """Scatter plot per variable: GP optimal projection vs default (m0000) vs obs."""
+                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix="",
+                           n_snaps=1, Y_low_ZRG=None):
+    """Scatter plot per variable: GP projection vs default vs obs.
+
+    When Y_low_ZRG is provided (multi-fidelity), also shows LF GP prediction
+    and LF default (first LF member).
+    """
+    is_multifidelity = Y_low_ZRG is not None
     best_params_norm = results[top_rows[0], :-1].reshape(1, -1)
-    m_opt, _ = gp.predict(best_params_norm)  # (1, n_feat, n_vars)
 
-    n_per_day = n_zonal + n_regions + 1
-    lat_bands = np.linspace(-90, 90, n_zonal + 1)
-    zonal_labels = [f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}" for i in range(n_zonal)]
-    zrg_labels = zonal_labels + list(regions_list) + ["global"]  # length = n_per_day
+    m_hf, _ = gp.predict(best_params_norm)     # (1, n_feat, n_vars)
+    m_lf = None
+    if is_multifidelity and hasattr(gp, "predict_lf"):
+        m_lf, _ = gp.predict_lf(best_params_norm)
 
-    x_range = list(range(n_per_day * 2))
+    n_per_snap = n_zonal + n_regions + 1
+    n_feat     = n_per_snap * n_snaps
+    x_range    = list(range(n_feat))
+
+    lat_bands   = np.linspace(-90, 90, n_zonal + 1)
+    snap_labels = ([f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}" for i in range(n_zonal)]
+                   + list(regions_list) + ["global"])
+    zrg_labels  = snap_labels * n_snaps
+
     point_size = 30
 
     for j, var in enumerate(var_names):
         sc = Y_scalers[j]
 
-        # GP-projected optimal (inverse transform from normalized space)
-        opt_pred = sc.inverse_transform(m_opt[:, :, j])[0]
+        hf_opt   = sc.inverse_transform(m_hf[:, :, j])[0]     # (n_feat,)
+        hf_def   = Y_train_ZRG[0, :, j]                       # first HF member
+        obs_vals = obs_parts[j].values[0]                     # (n_feat,)
 
-        # Default run (m0000) — Y_train_ZRG is in physical units
-        default_vals = Y_train_ZRG[0, :, j]
+        fig, ax = plt.subplots(figsize=(max(12, n_feat * 0.6), 4))
 
-        # Observations — obs_parts are already in physical units
-        obs_vals = obs_parts[j].values[0]
+        ax.scatter(x_range, hf_opt,  label='HF GP optimal', marker='s',
+                   edgecolors='steelblue', facecolors='none', s=point_size, zorder=4)
+        ax.scatter(x_range, hf_def,  label='HF default (m0)', marker='x',
+                   color='steelblue', s=point_size, zorder=3)
 
-        fig, ax = plt.subplots(figsize=(12, 4))
+        if is_multifidelity:
+            lf_opt = sc.inverse_transform(m_lf[:, :, j])[0]
+            lf_def = Y_low_ZRG[0, :, j]
+            ax.scatter(x_range, lf_opt, label='LF GP optimal', marker='s',
+                       edgecolors='darkorange', facecolors='none', s=point_size, zorder=4)
+            ax.scatter(x_range, lf_def, label='LF default (m0)', marker='x',
+                       color='darkorange', s=point_size, zorder=3)
 
-        ax.scatter(x_range, opt_pred,    label='GP optimal projection', marker='s',
-                   edgecolors='green', facecolors='none', s=point_size)
-        ax.scatter(x_range, default_vals, label='Default (m0000)',       marker='x',
-                   color='blue', s=point_size)
-        ax.scatter(x_range, obs_vals,     label='Obs',                   marker='^',
-                   edgecolors='red', facecolors='none', s=point_size)
+        ax.scatter(x_range, obs_vals, label='Obs', marker='^',
+                   edgecolors='red', facecolors='none', s=point_size, zorder=5)
 
-        ax.axvline(x=n_per_day - 0.5, color='black', linewidth=1)
+        # Vertical dividers between snapshots
+        for s in range(1, n_snaps):
+            ax.axvline(x=s * n_per_snap - 0.5, color='black', linewidth=1)
 
         ax.set_xticks(x_range)
-        ax.set_xticklabels(zrg_labels * 2, rotation=45, ha='right', fontsize=7)
-        ax.set_xlabel("DY1: Zonal / Regions / Global          "
-                      "DY2: Zonal / Regions / Global")
+        ax.set_xticklabels(zrg_labels, rotation=45, ha='right', fontsize=7)
         ax.set_ylabel(var)
-        ax.set_title(f'{var} — GP optimal projection vs default vs obs (ZRG bins)')
+        title = f'{var} — GP optimal vs default vs obs (ZRG bins)'
+        if is_multifidelity:
+            title += '  [blue=HF ne256, orange=LF ne32]'
+        ax.set_title(title)
         ax.legend(fontsize=8)
 
         plt.tight_layout()

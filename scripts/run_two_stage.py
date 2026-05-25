@@ -556,6 +556,29 @@ def run_stage2_multifidelity(cfg):
     )
     print(f"Done. Results: {csv_path}")
 
+    if cfg.diagnostics.enabled:
+        from autotune_gp.diagnostics import run_diagnostics
+        diag_dir = Path(cfg.diagnostics.output_dir) if cfg.diagnostics.output_dir \
+                   else Path(cfg.paths.output_dir) / "diagnostics"
+        print("=== Stage 2 (multi-fidelity): Diagnostics ===")
+        run_diagnostics(
+            results=results,
+            top_rows=top_rows,
+            gp=gp,
+            Y_train_ZRG=Y_high,
+            Y_scalers=Y_scalers,
+            obs_parts=obs_parts,
+            param_names=param_names,
+            var_names=var_names,
+            n_zonal=n_zonal,
+            n_regions=n_regions,
+            regions_list=cfg.data.regions_list,
+            out_dir=diag_dir,
+            suffix=f"_seed{cfg.optimize.seed}",
+            n_snaps=n_snaps,
+            Y_low_ZRG=Y_low,
+        )
+
 
 def main():
     p = argparse.ArgumentParser()

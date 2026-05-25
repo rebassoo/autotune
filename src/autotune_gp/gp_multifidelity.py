@@ -145,19 +145,25 @@ class MultiFidelityGPWrapper:
         mean : (1, n_feat, n_vars)
         var  : (1, n_feat, n_vars)
         """
+        return self._predict_at_fidelity(x, fidelity=1)
+
+    def predict_lf(self, x: np.ndarray):
+        """Predict at low fidelity. Same signature as predict()."""
+        return self._predict_at_fidelity(x, fidelity=0)
+
+    def _predict_at_fidelity(self, x: np.ndarray, fidelity: int):
         if not self._models:
             raise RuntimeError("Call .train() before .predict().")
 
         x = np.atleast_2d(np.asarray(x, dtype=float))
-        # Append fidelity index = 1 (high fidelity)
-        x_hf = np.hstack([x, np.ones((x.shape[0], 1))])
+        x_with_fid = np.hstack([x, np.full((x.shape[0], 1), fidelity, dtype=float)])
 
         mean = np.zeros((1, self.n_feat, self.n_vars))
         var  = np.zeros((1, self.n_feat, self.n_vars))
 
         for var_idx in range(self.n_vars):
             for feat_idx in range(self.n_feat):
-                m, v = self._models[var_idx][feat_idx].predict(x_hf)
+                m, v = self._models[var_idx][feat_idx].predict(x_with_fid)
                 mean[0, feat_idx, var_idx] = m[0, 0]
                 var [0, feat_idx, var_idx] = v[0, 0]
 
