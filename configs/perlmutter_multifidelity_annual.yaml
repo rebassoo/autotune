@@ -41,7 +41,7 @@ optimize:
     low: 0.0
     high: 1.0
   n_params: 19
-  max_workers: null
+  max_workers: 1
   param_ordering_constraints:
     - [lambda_low, lambda_high]
   param_physical_bounds:
