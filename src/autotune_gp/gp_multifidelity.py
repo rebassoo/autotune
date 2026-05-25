@@ -162,13 +162,16 @@ class MultiFidelityGPWrapper:
 
         x = np.atleast_2d(np.asarray(x, dtype=float))
         x_with_fid = np.hstack([x, np.full((x.shape[0], 1), fidelity, dtype=float)])
+        # MixedNoise likelihood needs to know the fidelity to apply the right noise term
+        y_meta = {"output_index": np.full(x.shape[0], fidelity, dtype=int)}
 
         mean = np.zeros((1, self.n_feat, self.n_vars))
         var  = np.zeros((1, self.n_feat, self.n_vars))
 
         for var_idx in range(self.n_vars):
             for feat_idx in range(self.n_feat):
-                m, v = self._models[var_idx][feat_idx].predict(x_with_fid)
+                m, v = self._models[var_idx][feat_idx].predict(x_with_fid,
+                                                               Y_metadata=y_meta)
                 mean[0, feat_idx, var_idx] = m[0, 0]
                 var [0, feat_idx, var_idx] = v[0, 0]
 
