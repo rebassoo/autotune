@@ -99,6 +99,7 @@ class MultiFidelityGPWrapper:
     # ------------------------------------------------------------------
     def train(self):
         """Train one AR1 model per output feature.  Logs progress."""
+        import warnings
         from emukit.multi_fidelity.models import GPyLinearMultiFidelityModel
         from emukit.multi_fidelity.convert_lists_to_array import convert_xy_lists_to_arrays
         import GPy
@@ -124,7 +125,12 @@ class MultiFidelityGPWrapper:
 
                 kernel = GPy.kern.RBF(input_dim=self.n_params, ARD=True,
                                      active_dims=list(range(self.n_params)))
-                model  = GPyLinearMultiFidelityModel(X_arr, Y_arr, kernel, n_fidelities=2)
+                # Suppress GPy's false-positive dimension warning: emukit appends a
+                # fidelity index column to X, making it n_params+1 wide, but the kernel
+                # correctly operates only on the first n_params dims via active_dims.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message="Your kernel has a different input dimension")
+                    model = GPyLinearMultiFidelityModel(X_arr, Y_arr, kernel, n_fidelities=2)
                 model.optimize()
 
                 var_models.append(model)
