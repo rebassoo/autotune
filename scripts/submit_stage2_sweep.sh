@@ -14,7 +14,7 @@
 set -euo pipefail
 
 module load conda
-conda activate /pscratch/sd/r/rebassoo/conda/ESEm_env.yml
+conda activate /pscratch/sd/r/rebassoo/conda/ESEm_env
 
 cd /global/u2/r/rebassoo/work/2026_02_02_Autotuning-Repo/autotune-gp
 
