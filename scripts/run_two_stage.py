@@ -392,6 +392,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
         return zrg_cost_function_mae_weighted(
             m, obs_norm, var_w, zrg_w, dy_w,
             n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+            var_names=list(var_names),
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
@@ -539,6 +540,7 @@ def run_stage2_multifidelity(cfg):
         return zrg_cost_function_mae_weighted(
             m, obs_norm, var_w, zrg_w, dy_w,
             n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+            var_names=list(var_names),
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
