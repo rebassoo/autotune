@@ -248,14 +248,30 @@ class MultiFidelityGPWrapper:
             pickle.dump(data, f)
         print(f"  Saved hyperparameters → {path}")
 
-        # Print summary: rho and discrepancy fraction per variable
-        disc_frac = k1_variance / (k0_variance + k1_variance + 1e-30)
+        # Print per-feature breakdown: rho and discrepancy fraction
+        disc_frac  = k1_variance / (k0_variance + k1_variance + 1e-30)
+        label_w    = max(len(lb) for lb in feat_labels)
+        var_w      = max(len(v)  for v in var_names)
 
+        header = (f"  {'Feature':<{label_w}}  "
+                  + "  ".join(f"{'rho':>6} {'disc%':>6}  ({v})" for v in var_names))
+        print(f"\n{header}")
+        print("  " + "-" * (len(header) - 2))
+
+        for feat_idx, label in enumerate(feat_labels):
+            row = f"  {label:<{label_w}}  "
+            for var_idx in range(len(var_names)):
+                r  = rho[var_idx, feat_idx]
+                df = disc_frac[var_idx, feat_idx] * 100   # as percent
+                row += f"  {r:6.3f} {df:5.1f}%  "
+            print(row)
+
+        print()
         for var_idx, var in enumerate(var_names):
-            print(f"\n  {var}   rho (min/mean/max): "
+            print(f"  {var:{var_w}}  rho (min/mean/max): "
                   f"{rho[var_idx].min():.3f} / {rho[var_idx].mean():.3f} / {rho[var_idx].max():.3f}   "
-                  f"discrepancy fraction (min/mean/max): "
-                  f"{disc_frac[var_idx].min():.3f} / {disc_frac[var_idx].mean():.3f} / {disc_frac[var_idx].max():.3f}")
+                  f"disc% (min/mean/max): "
+                  f"{disc_frac[var_idx].min()*100:.1f} / {disc_frac[var_idx].mean()*100:.1f} / {disc_frac[var_idx].max()*100:.1f}")
 
         return data
 
