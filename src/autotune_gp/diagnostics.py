@@ -11,14 +11,17 @@ import numpy as np
 
 def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                     param_names, var_names, n_zonal, n_regions, regions_list, out_dir,
-                    suffix="", n_snaps=1, Y_low_ZRG=None):
+                    suffix="", n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None):
     """Generate and save all diagnostic plots to out_dir.
 
-    suffix      — appended to each filename before the extension.
-    n_snaps     — number of temporal snapshots (1 for ANN, 2 for DY1+DY2, etc.).
-    Y_low_ZRG   — (n_low, n_feat, n_vars) LF training data in physical units;
-                  when provided (multi-fidelity), LF predictions and LF default
-                  are added to the ZRG projection plots.
+    suffix            — appended to each filename before the extension.
+    n_snaps           — number of temporal snapshots (1 for ANN, 2 for DY1+DY2, etc.).
+    Y_low_ZRG         — (n_low, n_feat, n_vars) LF training data in physical units;
+                        when provided (multi-fidelity), LF predictions and LF default
+                        are added to the ZRG projection plots.
+    zonal_center_lats — list of actual band-centre latitudes for the surviving zonal
+                        bands (e.g. [-65., -55., ..., 75.]).  When None the labels are
+                        recomputed from n_zonal, which is wrong if bands were dropped.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -26,7 +29,8 @@ def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
     _plot_barcode(results, top_rows, param_names, out_dir, suffix)
     _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix,
-                          n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG)
+                          n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG,
+                          zonal_center_lats=zonal_center_lats)
 
 
 def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
@@ -73,7 +77,7 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
 
 def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                            var_names, n_zonal, n_regions, regions_list, out_dir, suffix="",
-                           n_snaps=1, Y_low_ZRG=None):
+                           n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None):
     """Scatter plot per variable: GP projection vs default vs obs.
 
     When Y_low_ZRG is provided (multi-fidelity), also shows LF GP prediction
@@ -91,9 +95,13 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
     n_feat     = n_per_snap * n_snaps
     x_range    = list(range(n_feat))
 
-    lat_bands   = np.linspace(-90, 90, n_zonal + 1)
-    snap_labels = ([f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}" for i in range(n_zonal)]
-                   + list(regions_list) + ["global"])
+    if zonal_center_lats is not None:
+        zonal_labels = [f"{c:.0f}" for c in zonal_center_lats]
+    else:
+        lat_bands    = np.linspace(-90, 90, n_zonal + 1)
+        zonal_labels = [f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}" for i in range(n_zonal)]
+
+    snap_labels = zonal_labels + list(regions_list) + ["global"]
     zrg_labels  = snap_labels * n_snaps
 
     point_size = 30

@@ -280,6 +280,26 @@ def run_stage1(cfg, preprocess_mode: str = "both", make_plots: bool = False):
     print(f"Stage 1 complete. All outputs in: {out_dir}")
 
 
+def _zonal_center_lats(cfg, n_zonal_surviving):
+    """Return the actual band-centre latitudes for surviving zonal bands.
+
+    Uses the original n_zonal from cfg plus column_mask.pkl to find which
+    bands were kept after dropping polar bands in stage 1.  Falls back to
+    None (triggers approximate relabelling in diagnostics) if the mask file
+    is missing.
+    """
+    col_mask_path = Path(cfg.paths.preprocess_dir) / "column_mask.pkl"
+    if not col_mask_path.exists():
+        return None
+    with open(col_mask_path, "rb") as f:
+        col_mask = pickle.load(f)
+    n_zonal_orig = int(cfg.data.n_zonal)
+    orig_edges   = np.linspace(-90, 90, n_zonal_orig + 1)
+    orig_centers = 0.5 * (orig_edges[:-1] + orig_edges[1:])
+    surviving    = [i for i in col_mask["valid_feat_indices"] if i < n_zonal_orig]
+    return [orig_centers[i] for i in surviving]
+
+
 def run_stage2(cfg, _preprocess_pkls=None):
     """K-fold evaluation + surrogate training + optimization.
 
@@ -430,6 +450,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
             regions_list=cfg.data.regions_list,
             out_dir=diag_dir,
             suffix=f"_seed{cfg.optimize.seed}",
+            zonal_center_lats=_zonal_center_lats(cfg, n_zonal),
         )
 
 
@@ -579,6 +600,7 @@ def run_stage2_multifidelity(cfg):
             suffix=f"_seed{cfg.optimize.seed}",
             n_snaps=n_snaps,
             Y_low_ZRG=Y_low,
+            zonal_center_lats=_zonal_center_lats(cfg, n_zonal),
         )
 
 
