@@ -1,6 +1,7 @@
-"""Post-optimization diagnostic plots saved as PNGs."""
+"""Post-optimization diagnostic plots and data files saved to out_dir."""
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 
 import matplotlib
@@ -28,6 +29,10 @@ def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
 
     _plot_barcode(results, top_rows, param_names, out_dir, suffix)
     _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
+                          var_names, n_zonal, n_regions, regions_list, out_dir, suffix,
+                          n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG,
+                          zonal_center_lats=zonal_center_lats)
+    _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix,
                           n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG,
                           zonal_center_lats=zonal_center_lats)
@@ -149,3 +154,76 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  Saved {path}")
+
+
+def _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
+                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix="",
+                           n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None):
+    """Save projection arrays as a pickle for cross-run comparison plots.
+
+    Output file: projection_data{suffix}.pkl
+
+    Keys
+    ----
+    fidelity_type   : 'multi' or 'single'
+    var_names       : list of variable name strings
+    zrg_labels      : list of x-axis label strings (zonal + regional + global)
+    obs             : (n_feat, n_vars)  physical units
+    hf_optimal      : (n_feat, n_vars)  GP prediction at best params, physical
+    hf_default      : (n_feat, n_vars)  first HF training member, physical
+    lf_optimal      : (n_feat, n_vars) or None  LF prediction at best params
+    lf_default      : (n_feat, n_vars) or None  first LF training member
+    best_params_norm: (n_params,)  normalised parameter vector
+    best_cost       : float
+    """
+    is_multifidelity = Y_low_ZRG is not None
+    best_params_norm = results[top_rows[0], :-1]
+    best_cost        = float(results[top_rows[0], -1])
+
+    m_hf, _ = gp.predict(best_params_norm.reshape(1, -1))
+    m_lf     = None
+    if is_multifidelity and hasattr(gp, "predict_lf"):
+        m_lf, _ = gp.predict_lf(best_params_norm.reshape(1, -1))
+
+    n_feat = Y_train_ZRG.shape[1]
+
+    if zonal_center_lats is not None:
+        zonal_labels = [f"{c:.0f}" for c in zonal_center_lats]
+    else:
+        lat_bands    = np.linspace(-90, 90, n_zonal + 1)
+        zonal_labels = [f"{(lat_bands[i] + lat_bands[i+1]) / 2:.0f}" for i in range(n_zonal)]
+    snap_labels = zonal_labels + list(regions_list) + ["global"]
+    zrg_labels  = snap_labels * n_snaps
+
+    n_vars = len(var_names)
+    hf_optimal = np.stack(
+        [Y_scalers[j].inverse_transform(m_hf[:, :, j])[0] for j in range(n_vars)], axis=1
+    )   # (n_feat, n_vars)
+    hf_default = Y_train_ZRG[0]   # (n_feat, n_vars)
+    obs        = np.stack([obs_parts[j].values[0] for j in range(n_vars)], axis=1)
+
+    lf_optimal = None
+    lf_default = None
+    if is_multifidelity and m_lf is not None:
+        lf_optimal = np.stack(
+            [Y_scalers[j].inverse_transform(m_lf[:, :, j])[0] for j in range(n_vars)], axis=1
+        )
+        lf_default = Y_low_ZRG[0]   # (n_feat, n_vars)
+
+    data = dict(
+        fidelity_type    = "multi" if is_multifidelity else "single",
+        var_names        = list(var_names),
+        zrg_labels       = zrg_labels,
+        obs              = obs,
+        hf_optimal       = hf_optimal,
+        hf_default       = hf_default,
+        lf_optimal       = lf_optimal,
+        lf_default       = lf_default,
+        best_params_norm = best_params_norm,
+        best_cost        = best_cost,
+    )
+
+    path = out_dir / f"projection_data{suffix}.pkl"
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+    print(f"  Saved {path}")
