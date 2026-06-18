@@ -150,29 +150,49 @@ class MultiFidelityGPWrapper:
         mean : (1, n_feat, n_vars)
         var  : (1, n_feat, n_vars)
         """
-        return self._predict_at_fidelity(x, fidelity=1)
+        m, v = self.predict_batch(np.atleast_2d(x))
+        return m[:1], v[:1]
 
     def predict_lf(self, x: np.ndarray):
         """Predict at low fidelity. Same signature as predict()."""
-        return self._predict_at_fidelity(x, fidelity=0)
+        m, v = self.predict_lf_batch(np.atleast_2d(x))
+        return m[:1], v[:1]
 
-    def _predict_at_fidelity(self, x: np.ndarray, fidelity: int):
+    def predict_batch(self, X: np.ndarray):
+        """
+        Predict at high fidelity for a batch of parameter sets.
+
+        X : (n, n_params) — normalised
+
+        Returns
+        -------
+        mean : (n, n_feat, n_vars)
+        var  : (n, n_feat, n_vars)
+        """
+        return self._predict_batch_at_fidelity(X, fidelity=1)
+
+    def predict_lf_batch(self, X: np.ndarray):
+        """Predict at low fidelity for a batch. Same signature as predict_batch()."""
+        return self._predict_batch_at_fidelity(X, fidelity=0)
+
+    def _predict_batch_at_fidelity(self, X: np.ndarray, fidelity: int):
         if not self._models:
             raise RuntimeError("Call .train() before .predict().")
 
-        x = np.atleast_2d(np.asarray(x, dtype=float))
-        x_with_fid = np.hstack([x, np.full((x.shape[0], 1), fidelity, dtype=float)])
+        X = np.atleast_2d(np.asarray(X, dtype=float))
+        n = X.shape[0]
+        x_with_fid = np.hstack([X, np.full((n, 1), fidelity, dtype=float)])
         # MixedNoise likelihood needs to know the fidelity to apply the right noise term
-        y_meta = {"output_index": np.full(x.shape[0], fidelity, dtype=int)}
+        y_meta = {"output_index": np.full(n, fidelity, dtype=int)}
 
-        mean = np.zeros((1, self.n_feat, self.n_vars))
-        var  = np.zeros((1, self.n_feat, self.n_vars))
+        mean = np.zeros((n, self.n_feat, self.n_vars))
+        var  = np.zeros((n, self.n_feat, self.n_vars))
 
         for var_idx in range(self.n_vars):
             for feat_idx in range(self.n_feat):
                 m, v = self._models[var_idx][feat_idx].predict(x_with_fid,
                                                                Y_metadata=y_meta)
-                mean[0, feat_idx, var_idx] = m[0, 0]
-                var [0, feat_idx, var_idx] = v[0, 0]
+                mean[:, feat_idx, var_idx] = m[:, 0]
+                var [:, feat_idx, var_idx] = v[:, 0]
 
         return mean, var

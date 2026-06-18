@@ -502,6 +502,19 @@ def run_stage2_multifidelity(cfg):
         )
 
     # ------------------------------------------------------------------
+    if cfg.runtime.train_gp:
+        print("=== Stage 2 (multi-fidelity): K-fold evaluation ===")
+        from autotune_gp.evaluate import run_kfold_evaluation_mf
+        run_kfold_evaluation_mf(
+            X_high, Y_high,
+            X_low,  Y_low,
+            var_names=var_names,
+            k=5,
+        )
+    else:
+        print("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
+
+    # ------------------------------------------------------------------
     print("=== Stage 2 (multi-fidelity): Normalise ===")
     with open(out_dir / "scalers.pkl", "rb") as f:
         saved = pickle.load(f)

@@ -123,3 +123,95 @@ def run_kfold_evaluation(folds: list, train_gp: bool = True) -> dict:
         print_summary(all_results)
 
     return all_results
+
+
+def run_kfold_evaluation_mf(
+    X_high,
+    Y_high: np.ndarray,
+    X_low,
+    Y_low: np.ndarray,
+    var_names: list,
+    k: int = 5,
+    seed: int = 42,
+) -> dict:
+    """
+    K-fold cross-validation for the AR1 multi-fidelity GP.
+
+    HF data is split into k folds; all LF data is kept in every fold.
+    Scalers are fitted on the HF training fold only and applied to LF and
+    HF test data — identical in spirit to the single-fidelity evaluate_fold.
+
+    Inputs are in physical (un-normalised) units.
+    Y_low must already be aligned to the HF feature layout
+    (call align_Y_to_hf_layout first if needed).
+
+    Reports R² / RMSE per variable, variance-weighted across features.
+    """
+    from .gp_multifidelity import MultiFidelityGPWrapper
+
+    n_hf     = len(X_high) if hasattr(X_high, '__len__') else X_high.shape[0]
+    rng      = np.random.RandomState(seed)
+    perm     = rng.permutation(n_hf)
+    fold_idx = np.array_split(perm, k)
+
+    X_low_arr = np.asarray(X_low,  dtype=float)
+    Y_low_arr = np.asarray(Y_low,  dtype=float)   # (n_low, n_feat, n_vars)
+    Y_high    = np.asarray(Y_high, dtype=float)   # (n_hf,  n_feat, n_vars)
+
+    n_models = Y_high.shape[1] * len(var_names)   # n_feat * n_vars
+    all_results = {}
+
+    for fold_k in range(k):
+        test_idx  = fold_idx[fold_k]
+        train_idx = np.concatenate([fold_idx[i] for i in range(k) if i != fold_k])
+
+        print(f"\nMF k-fold {fold_k + 1}/{k}  "
+              f"(HF train={len(train_idx)}, HF test={len(test_idx)}, "
+              f"LF={len(X_low_arr)}) — training {n_models} AR1 models ...")
+
+        X_hi_tr = X_high.iloc[train_idx] if hasattr(X_high, 'iloc') else X_high[train_idx]
+        X_hi_te = X_high.iloc[test_idx]  if hasattr(X_high, 'iloc') else X_high[test_idx]
+        Y_hi_tr = Y_high[train_idx]
+        Y_hi_te = Y_high[test_idx]
+
+        # Fit scalers on HF training fold only (same principle as single-fidelity)
+        X_sc,      X_hi_tr_norm = fit_transform_X(X_hi_tr)
+        Y_scalers, Y_hi_tr_norm = fit_transform_Y(Y_hi_tr)
+
+        X_lo_norm    = X_sc.transform(X_low_arr)
+        X_hi_te_norm = X_sc.transform(np.asarray(X_hi_te, dtype=float))
+
+        Y_lo_norm = np.stack(
+            [Y_scalers[j].transform(Y_low_arr[:, :, j]) for j in range(len(var_names))],
+            axis=0,
+        ).transpose(1, 2, 0)   # (n_low, n_feat, n_vars)
+
+        gp = MultiFidelityGPWrapper(X_lo_norm, Y_lo_norm, X_hi_tr_norm, Y_hi_tr_norm)
+        gp.train()
+
+        pred_norm, _ = gp.predict_batch(X_hi_te_norm)   # (n_te, n_feat, n_vars)
+
+        fold_results = {}
+        for j, var in enumerate(var_names):
+            t_norm = Y_scalers[j].transform(Y_hi_te[:, :, j])   # (n_te, n_feat)
+            p_norm = pred_norm[:, :, j]
+
+            r2_norm   = r2_score(t_norm, p_norm, multioutput="variance_weighted")
+            rmse_norm = root_mean_squared_error(t_norm, p_norm)
+
+            p_phys = Y_scalers[j].inverse_transform(p_norm)
+            t_phys = Y_hi_te[:, :, j]
+
+            r2_phys   = r2_score(t_phys, p_phys, multioutput="variance_weighted")
+            rmse_phys = root_mean_squared_error(t_phys, p_phys)
+
+            fold_results[var] = dict(r2_norm=r2_norm, rmse_norm=rmse_norm,
+                                     r2_phys=r2_phys, rmse_phys=rmse_phys)
+
+        print_fold_results(fold_k + 1, fold_results)
+        all_results[fold_k + 1] = fold_results
+
+    if len(all_results) > 1:
+        print_summary(all_results)
+
+    return all_results
