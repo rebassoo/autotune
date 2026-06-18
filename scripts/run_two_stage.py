@@ -546,6 +546,22 @@ def run_stage2_multifidelity(cfg):
     gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
     gp.train()
 
+    print("=== Stage 2 (multi-fidelity): Save hyperparameters ===")
+    n_regions = len(cfg.data.regions_list)
+    n_snaps   = len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2
+    n_zonal   = Y_high.shape[1] // n_snaps - n_regions - 1
+    _zonal_lats = _zonal_center_lats(cfg, n_zonal)
+    _snap_labels = (([f"{c:.0f}" for c in _zonal_lats] if _zonal_lats else
+                     [str(i) for i in range(n_zonal)])
+                    + list(cfg.data.regions_list) + ["global"]) * n_snaps
+    hp_dir = (Path(cfg.diagnostics.output_dir) if cfg.diagnostics.output_dir
+              else Path(cfg.paths.output_dir) / "diagnostics")
+    gp.save_hyperparameters(
+        path=str(hp_dir / "hyperparameters.pkl"),
+        var_names=var_names,
+        feat_labels=_snap_labels,
+    )
+
     # ------------------------------------------------------------------
     print("=== Stage 2 (multi-fidelity): Optimize ===")
     backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)

@@ -15,6 +15,9 @@ mirrors how GPWrapper / esem handles multi-output internally.
 """
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
+
 import numpy as np
 
 
@@ -175,6 +178,88 @@ class MultiFidelityGPWrapper:
         """Predict at low fidelity for a batch. Same signature as predict_batch()."""
         return self._predict_batch_at_fidelity(X, fidelity=0)
 
+    # ------------------------------------------------------------------
+    def save_hyperparameters(
+        self,
+        path: str,
+        var_names: list | None = None,
+        feat_labels: list | None = None,
+    ) -> dict:
+        """
+        Extract hyperparameters from all trained AR1 models, save to a pickle,
+        and print a summary table.
+
+        Parameters
+        ----------
+        path        : file path for the pickle (e.g. diagnostics/hyperparams.pkl)
+        var_names   : list of variable name strings, length n_vars
+        feat_labels : list of ZRG feature label strings, length n_feat
+
+        Saved arrays (all shape (n_vars, n_feat)):
+            rho            — AR1 scaling ρ
+            k0_variance    — base kernel amplitude
+            k1_variance    — discrepancy kernel amplitude
+            noise_lf       — LF noise variance
+            noise_hf       — HF noise variance
+
+        Shape (n_vars, n_feat, n_params):
+            k0_lengthscales
+            k1_lengthscales
+        """
+        if not self._models:
+            raise RuntimeError("Call .train() before .save_hyperparameters().")
+
+        var_names   = var_names   or [f"var{j}"  for j in range(self.n_vars)]
+        feat_labels = feat_labels or [f"feat{i}" for i in range(self.n_feat)]
+
+        rho             = np.zeros((self.n_vars, self.n_feat))
+        k0_variance     = np.zeros((self.n_vars, self.n_feat))
+        k1_variance     = np.zeros((self.n_vars, self.n_feat))
+        noise_lf        = np.zeros((self.n_vars, self.n_feat))
+        noise_hf        = np.zeros((self.n_vars, self.n_feat))
+        k0_lengthscales = np.zeros((self.n_vars, self.n_feat, self.n_params))
+        k1_lengthscales = np.zeros((self.n_vars, self.n_feat, self.n_params))
+
+        for var_idx in range(self.n_vars):
+            for feat_idx in range(self.n_feat):
+                m = self._models[var_idx][feat_idx]
+                rho[var_idx, feat_idx]               = float(m.kern.scaling_param[0])
+                k0_variance[var_idx, feat_idx]       = float(m.kern.kernels[0].variance)
+                k1_variance[var_idx, feat_idx]       = float(m.kern.kernels[1].variance)
+                noise_lf[var_idx, feat_idx]          = float(m.likelihood.likelihoods_list[0].variance)
+                noise_hf[var_idx, feat_idx]          = float(m.likelihood.likelihoods_list[1].variance)
+                k0_lengthscales[var_idx, feat_idx]   = m.kern.kernels[0].lengthscale[:]
+                k1_lengthscales[var_idx, feat_idx]   = m.kern.kernels[1].lengthscale[:]
+
+        data = dict(
+            var_names       = var_names,
+            feat_labels     = feat_labels,
+            rho             = rho,
+            k0_variance     = k0_variance,
+            k1_variance     = k1_variance,
+            noise_lf        = noise_lf,
+            noise_hf        = noise_hf,
+            k0_lengthscales = k0_lengthscales,
+            k1_lengthscales = k1_lengthscales,
+        )
+
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+        print(f"  Saved hyperparameters → {path}")
+
+        # Print summary: rho and discrepancy fraction per variable
+        disc_frac = k1_variance / (k0_variance + k1_variance + 1e-30)
+
+        for var_idx, var in enumerate(var_names):
+            print(f"\n  {var}   rho (min/mean/max): "
+                  f"{rho[var_idx].min():.3f} / {rho[var_idx].mean():.3f} / {rho[var_idx].max():.3f}   "
+                  f"discrepancy fraction (min/mean/max): "
+                  f"{disc_frac[var_idx].min():.3f} / {disc_frac[var_idx].mean():.3f} / {disc_frac[var_idx].max():.3f}")
+
+        return data
+
+    # ------------------------------------------------------------------
     def _predict_batch_at_fidelity(self, X: np.ndarray, fidelity: int):
         if not self._models:
             raise RuntimeError("Call .train() before .predict().")
