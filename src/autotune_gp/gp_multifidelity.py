@@ -132,7 +132,14 @@ class MultiFidelityGPWrapper:
                            for _ in range(2)]
                 mf_kernel = LinearMultiFidelityKernel(kernels)
                 model = GPyLinearMultiFidelityModel(X_arr, Y_arr, mf_kernel, n_fidelities=2)
-                model.optimize()
+
+                # Constrain rho to (0, 5]: prevents negative rho (physically
+                # implausible for two resolutions of the same model) and the
+                # degenerate k0_variance->0 / rho->inf collapse.
+                model.kern.scaling_param.constrain_bounded(1e-6, 5.0)
+
+                model.optimize_restarts(n_restarts=3, verbose=False,
+                                        robust=True, messages=False)
 
                 var_models.append(model)
                 done += 1
