@@ -138,8 +138,7 @@ class MultiFidelityGPWrapper:
                 # degenerate k0_variance->0 / rho->inf collapse.
                 model.kern.scaling_param.constrain_bounded(1e-6, 5.0)
 
-                model.optimize_restarts(n_restarts=3, verbose=False,
-                                        robust=True, messages=False)
+                model.optimize()
 
                 var_models.append(model)
                 done += 1
