@@ -254,8 +254,9 @@ class MultiFidelityGPWrapper:
             pickle.dump(data, f)
         print(f"  Saved hyperparameters → {path}")
 
-        # Print per-feature breakdown: rho and discrepancy fraction
-        disc_frac  = k1_variance / (k0_variance + k1_variance + 1e-30)
+        # disc% = k1_var / (rho²·k0_var + k1_var): the true fraction of K_HH
+        # variance from the discrepancy kernel, accounting for rho amplification.
+        disc_frac  = k1_variance / (rho ** 2 * k0_variance + k1_variance + 1e-30)
         label_w    = max(len(lb) for lb in feat_labels)
         var_w      = max(len(v)  for v in var_names)
 
