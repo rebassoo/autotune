@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.stats import pearsonr
 from sklearn.metrics import r2_score, root_mean_squared_error
 
 from .transforms import fit_transform_X, fit_transform_Y
@@ -261,3 +262,49 @@ def _print_feature_r2_summary(feat_r2_folds: dict, var_names: list,
         std  = arr.mean(axis=1).std()          # std over folds
         print(f"  {var}  overall R² (mean ± std across folds): "
               f"{mean:+.3f} ± {std:.3f}")
+
+
+def select_top_params_hf(X_high, Y_high, var_names, k=6, param_names=None):
+    """Select the top-k parameters by HF Pearson correlation.
+
+    For each (parameter, variable) pair computes mean |r| across all ZRG
+    features.  Each parameter is then scored by its maximum mean |r| across
+    variables.  Returns the indices (into X_high columns) of the top-k
+    parameters, sorted in their original order.
+
+    Parameters
+    ----------
+    X_high      : array-like, shape (n_hf, n_params)
+    Y_high      : ndarray, shape (n_hf, n_feat, n_vars)
+    var_names   : list of str
+    k           : number of parameters to keep
+    param_names : optional list of str — used only for the printed summary
+
+    Returns
+    -------
+    top_idx     : ndarray of int, shape (k,), sorted ascending
+    scores      : ndarray of float, shape (n_params,) — max mean |r| per param
+    """
+    X       = np.asarray(X_high, dtype=float)
+    n_params = X.shape[1]
+    n_feat   = Y_high.shape[1]
+    n_vars   = len(var_names)
+
+    mean_abs_r = np.zeros((n_params, n_vars))
+    for pi in range(n_params):
+        for vi in range(n_vars):
+            rs = [abs(pearsonr(X[:, pi], Y_high[:, fi, vi])[0])
+                  for fi in range(n_feat)]
+            mean_abs_r[pi, vi] = np.mean(rs)
+
+    scores  = mean_abs_r.max(axis=1)
+    top_idx = np.sort(np.argsort(scores)[::-1][:k])
+
+    names = param_names or [str(i) for i in range(n_params)]
+    print(f"\n  Top {k} parameters by HF mean |Pearson r| (max across variables):")
+    for rank, idx in enumerate(np.argsort(scores)[::-1][:k], 1):
+        per_var = "  ".join(f"{var}={mean_abs_r[idx, vi]:.3f}"
+                            for vi, var in enumerate(var_names))
+        print(f"    {rank:2d}. {names[idx]:<30s}  score={scores[idx]:.3f}  [{per_var}]")
+
+    return top_idx, scores

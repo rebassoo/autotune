@@ -48,7 +48,7 @@ from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_o
 from autotune_gp.gp import GPWrapper
 from autotune_gp.cost import zrg_cost_function_mae_weighted
 from autotune_gp.optimize import optimize_parallel
-from autotune_gp.evaluate import run_kfold_evaluation
+from autotune_gp.evaluate import run_kfold_evaluation, select_top_params_hf
 
 from preprocessing.pipeline import (
     build_run_list,
@@ -454,7 +454,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
         )
 
 
-def run_stage2_multifidelity(cfg):
+def run_stage2_multifidelity(cfg, top_k_params=None):
     """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
 
     High-fidelity data comes from cfg.paths.preprocess_dir (same as the
@@ -521,8 +521,48 @@ def run_stage2_multifidelity(cfg):
             k=5,
             feat_labels=_kfold_feat_lbls,
         )
+
+        if top_k_params is not None:
+            param_names_full = (list(X_high.columns)
+                                if hasattr(X_high, "columns")
+                                else [str(i) for i in range(np.asarray(X_high).shape[1])])
+            top_idx, _ = select_top_params_hf(
+                X_high, Y_high, var_names,
+                k=top_k_params, param_names=param_names_full,
+            )
+            X_high_red = (X_high.iloc[:, top_idx]
+                          if hasattr(X_high, "iloc") else np.asarray(X_high)[:, top_idx])
+            X_low_red  = (X_low.iloc[:, top_idx]
+                          if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
+            print(f"\n=== Stage 2 (multi-fidelity): K-fold with top-{top_k_params} params ===")
+            run_kfold_evaluation_mf(
+                X_high_red, Y_high,
+                X_low_red,  Y_low,
+                var_names=var_names,
+                k=5,
+                feat_labels=_kfold_feat_lbls,
+            )
     else:
         print("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
+        top_idx = None
+
+    # Compute top_idx even when train_gp=False so the surrogate uses reduced params
+    if top_k_params is not None and (not cfg.runtime.train_gp):
+        param_names_full = (list(X_high.columns)
+                            if hasattr(X_high, "columns")
+                            else [str(i) for i in range(np.asarray(X_high).shape[1])])
+        top_idx, _ = select_top_params_hf(
+            X_high, Y_high, var_names,
+            k=top_k_params, param_names=param_names_full,
+        )
+
+    # Apply parameter reduction for surrogate training and optimization
+    if top_k_params is not None:
+        X_high = (X_high.iloc[:, top_idx]
+                  if hasattr(X_high, "iloc") else np.asarray(X_high)[:, top_idx])
+        X_low  = (X_low.iloc[:, top_idx]
+                  if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
+        print(f"\n  Surrogate and optimization will use top-{top_k_params} params.")
 
     # ------------------------------------------------------------------
     print("=== Stage 2 (multi-fidelity): Normalise ===")
@@ -604,11 +644,15 @@ def run_stage2_multifidelity(cfg):
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
+    n_opt_params  = len(param_names) if param_names else cfg.optimize.n_params
+    bounds_low    = [cfg.optimize.bounds["low"][i]  for i in range(n_opt_params)]
+    bounds_high   = [cfg.optimize.bounds["high"][i] for i in range(n_opt_params)]
+
     results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,
-        n_params=cfg.optimize.n_params,
-        bounds_low=cfg.optimize.bounds["low"],
-        bounds_high=cfg.optimize.bounds["high"],
+        n_params=n_opt_params,
+        bounds_low=bounds_low,
+        bounds_high=bounds_high,
         seed=cfg.optimize.seed,
         n_xstarts=cfg.optimize.n_xstarts,
         niter=cfg.optimize.niter,
@@ -673,6 +717,13 @@ def main():
                    help="Override optimize.seed from config.")
     p.add_argument("--n-xstarts", type=int, default=None,
                    help="Override optimize.n_xstarts from config.")
+    p.add_argument("--top-k-params", type=int, default=None,
+                   metavar="K",
+                   help="(Multi-fidelity only) Select the top-K parameters by HF "
+                        "Pearson correlation before training. Runs both the full "
+                        "19-param k-fold and a reduced K-param k-fold for comparison, "
+                        "then trains the surrogate and runs optimization in the reduced "
+                        "K-param space.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -680,6 +731,7 @@ def main():
         cfg.optimize.seed = args.seed
     if args.n_xstarts is not None:
         cfg.optimize.n_xstarts = args.n_xstarts
+    top_k_params = args.top_k_params
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
@@ -689,13 +741,13 @@ def main():
         run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
     elif args.stage == 2:
         if use_mf:
-            run_stage2_multifidelity(cfg)
+            run_stage2_multifidelity(cfg, top_k_params=top_k_params)
         else:
             run_stage2(cfg)
     else:
         run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
         if use_mf:
-            run_stage2_multifidelity(cfg)
+            run_stage2_multifidelity(cfg, top_k_params=top_k_params)
         else:
             out_dir = Path(cfg.paths.preprocess_dir)
             run_stage2(cfg, _preprocess_pkls={
