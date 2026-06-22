@@ -133,6 +133,7 @@ def run_kfold_evaluation_mf(
     var_names: list,
     k: int = 5,
     seed: int = 42,
+    feat_labels: list | None = None,
 ) -> dict:
     """
     K-fold cross-validation for the AR1 multi-fidelity GP.
@@ -145,7 +146,8 @@ def run_kfold_evaluation_mf(
     Y_low must already be aligned to the HF feature layout
     (call align_Y_to_hf_layout first if needed).
 
-    Reports R² / RMSE per variable, variance-weighted across features.
+    Reports R² / RMSE per variable (variance-weighted across features) for
+    each fold, then a per-feature R² summary (mean ± std across folds).
     """
     from .gp_multifidelity import MultiFidelityGPWrapper
 
@@ -158,8 +160,11 @@ def run_kfold_evaluation_mf(
     Y_low_arr = np.asarray(Y_low,  dtype=float)   # (n_low, n_feat, n_vars)
     Y_high    = np.asarray(Y_high, dtype=float)   # (n_hf,  n_feat, n_vars)
 
-    n_models = Y_high.shape[1] * len(var_names)   # n_feat * n_vars
+    n_feat   = Y_high.shape[1]
+    n_models = n_feat * len(var_names)
     all_results = {}
+    # per-feature R²: list of (n_feat,) arrays, one per fold per var
+    feat_r2_folds = {var: [] for var in var_names}
 
     for fold_k in range(k):
         test_idx  = fold_idx[fold_k]
@@ -205,6 +210,13 @@ def run_kfold_evaluation_mf(
             r2_phys   = r2_score(t_phys, p_phys, multioutput="variance_weighted")
             rmse_phys = root_mean_squared_error(t_phys, p_phys)
 
+            # per-feature R² (physical space), shape (n_feat,)
+            feat_r2 = np.array([
+                r2_score(t_phys[:, fi:fi+1], p_phys[:, fi:fi+1])
+                for fi in range(n_feat)
+            ])
+            feat_r2_folds[var].append(feat_r2)
+
             fold_results[var] = dict(r2_norm=r2_norm, rmse_norm=rmse_norm,
                                      r2_phys=r2_phys, rmse_phys=rmse_phys)
 
@@ -213,5 +225,39 @@ def run_kfold_evaluation_mf(
 
     if len(all_results) > 1:
         print_summary(all_results)
+        _print_feature_r2_summary(feat_r2_folds, var_names, feat_labels)
 
     return all_results
+
+
+def _print_feature_r2_summary(feat_r2_folds: dict, var_names: list,
+                               feat_labels: list | None):
+    """Print per-feature R² (mean ± std across folds) for each variable."""
+    n_feat = len(next(iter(feat_r2_folds.values()))[0])
+    labels = feat_labels or [f"feat{i}" for i in range(n_feat)]
+    label_w = max(len(lb) for lb in labels)
+
+    print("\n=== Per-feature R² (mean ± std across folds, physical space) ===")
+    header = f"  {'Feature':<{label_w}}  " + "  ".join(
+        f"{'R²':>6} {'±':>1} {'std':>5}  ({v})" for v in var_names
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    for fi, label in enumerate(labels):
+        row = f"  {label:<{label_w}}  "
+        for var in var_names:
+            arr  = np.array([fold[fi] for fold in feat_r2_folds[var]])
+            mean = arr.mean()
+            std  = arr.std()
+            row += f"  {mean:+6.3f} ± {std:5.3f}  "
+        print(row)
+
+    # Overall summary line
+    print()
+    for var in var_names:
+        arr  = np.array(feat_r2_folds[var])   # (k, n_feat)
+        mean = arr.mean(axis=1).mean()         # mean over folds of fold-mean
+        std  = arr.mean(axis=1).std()          # std over folds
+        print(f"  {var}  overall R² (mean ± std across folds): "
+              f"{mean:+.3f} ± {std:.3f}")

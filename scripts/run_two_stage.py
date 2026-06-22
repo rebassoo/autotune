@@ -505,11 +505,21 @@ def run_stage2_multifidelity(cfg):
     if cfg.runtime.train_gp:
         print("=== Stage 2 (multi-fidelity): K-fold evaluation ===")
         from autotune_gp.evaluate import run_kfold_evaluation_mf
+        _kfold_n_zonal   = Y_high.shape[1] // (
+            len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2
+        ) - len(cfg.data.regions_list) - 1
+        _kfold_lats      = _zonal_center_lats(cfg, _kfold_n_zonal)
+        _kfold_feat_lbls = (
+            ([f"{c:.0f}" for c in _kfold_lats] if _kfold_lats
+             else [str(i) for i in range(_kfold_n_zonal)])
+            + list(cfg.data.regions_list) + ["global"]
+        ) * (len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2)
         run_kfold_evaluation_mf(
             X_high, Y_high,
             X_low,  Y_low,
             var_names=var_names,
             k=5,
+            feat_labels=_kfold_feat_lbls,
         )
     else:
         print("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
