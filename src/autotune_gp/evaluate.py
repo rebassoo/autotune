@@ -8,6 +8,7 @@ Core functions imported by:
 """
 from __future__ import annotations
 
+import time as _time
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
@@ -15,6 +16,64 @@ from sklearn.metrics import r2_score, root_mean_squared_error
 
 from .transforms import fit_transform_X, fit_transform_Y
 from .gp import GPWrapper
+
+
+def _run_kfold_mf_fold(args):
+    """Worker for one MF k-fold — runs in a separate process."""
+    from .gp_multifidelity import MultiFidelityGPWrapper
+
+    (fold_k, train_idx, test_idx,
+     X_high_arr, Y_high, X_low_arr, Y_low_arr, var_names) = args
+
+    n_feat   = Y_high.shape[1]
+
+    X_hi_tr = X_high_arr[train_idx]
+    X_hi_te = X_high_arr[test_idx]
+    Y_hi_tr = Y_high[train_idx]
+    Y_hi_te = Y_high[test_idx]
+
+    X_sc,      X_hi_tr_norm = fit_transform_X(X_hi_tr)
+    Y_scalers, Y_hi_tr_norm = fit_transform_Y(Y_hi_tr)
+
+    X_lo_norm    = X_sc.transform(X_low_arr)
+    X_hi_te_norm = X_sc.transform(X_hi_te)
+
+    Y_lo_norm = np.stack(
+        [Y_scalers[j].transform(Y_low_arr[:, :, j]) for j in range(len(var_names))],
+        axis=0,
+    ).transpose(1, 2, 0)
+
+    t0 = _time.time()
+    gp = MultiFidelityGPWrapper(X_lo_norm, Y_lo_norm, X_hi_tr_norm, Y_hi_tr_norm)
+    gp.train()
+    train_secs = _time.time() - t0
+
+    pred_norm, _ = gp.predict_batch(X_hi_te_norm)
+
+    fold_results = {}
+    feat_r2 = {}
+    for j, var in enumerate(var_names):
+        t_norm = Y_scalers[j].transform(Y_hi_te[:, :, j])
+        p_norm = pred_norm[:, :, j]
+
+        r2_norm   = r2_score(t_norm, p_norm, multioutput="variance_weighted")
+        rmse_norm = root_mean_squared_error(t_norm, p_norm)
+
+        p_phys = Y_scalers[j].inverse_transform(p_norm)
+        t_phys = Y_hi_te[:, :, j]
+
+        r2_phys   = r2_score(t_phys, p_phys, multioutput="variance_weighted")
+        rmse_phys = root_mean_squared_error(t_phys, p_phys)
+
+        feat_r2[var] = np.array([
+            r2_score(t_phys[:, fi:fi+1], p_phys[:, fi:fi+1])
+            for fi in range(n_feat)
+        ])
+
+        fold_results[var] = dict(r2_norm=r2_norm, rmse_norm=rmse_norm,
+                                 r2_phys=r2_phys, rmse_phys=rmse_phys)
+
+    return fold_k, fold_results, feat_r2, train_secs
 
 def evaluate_fold(fold: dict, train_gp: bool = True) -> dict:
     """
@@ -135,94 +194,81 @@ def run_kfold_evaluation_mf(
     k: int = 5,
     seed: int = 42,
     feat_labels: list | None = None,
+    checkpoint_dir: str | None = None,
+    n_workers: int = 0,
 ) -> dict:
     """
     K-fold cross-validation for the AR1 multi-fidelity GP.
 
     HF data is split into k folds; all LF data is kept in every fold.
-    Scalers are fitted on the HF training fold only and applied to LF and
-    HF test data — identical in spirit to the single-fidelity evaluate_fold.
+    Folds run in parallel (n_workers=0 uses min(k, cpu_count)).
 
     Inputs are in physical (un-normalised) units.
-    Y_low must already be aligned to the HF feature layout
-    (call align_Y_to_hf_layout first if needed).
-
-    Reports R² / RMSE per variable (variance-weighted across features) for
-    each fold, then a per-feature R² summary (mean ± std across folds).
+    Y_low must already be aligned to the HF feature layout.
     """
-    from .gp_multifidelity import MultiFidelityGPWrapper
+    import os as _os
+    import pickle as _pickle
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    n_hf     = len(X_high) if hasattr(X_high, '__len__') else X_high.shape[0]
-    rng      = np.random.RandomState(seed)
-    perm     = rng.permutation(n_hf)
-    fold_idx = np.array_split(perm, k)
+    n_hf      = len(X_high) if hasattr(X_high, '__len__') else X_high.shape[0]
+    rng       = np.random.RandomState(seed)
+    perm      = rng.permutation(n_hf)
+    fold_idx  = np.array_split(perm, k)
 
-    X_low_arr = np.asarray(X_low,  dtype=float)
-    Y_low_arr = np.asarray(Y_low,  dtype=float)   # (n_low, n_feat, n_vars)
-    Y_high    = np.asarray(Y_high, dtype=float)   # (n_hf,  n_feat, n_vars)
+    X_high_arr = np.asarray(X_high, dtype=float)
+    X_low_arr  = np.asarray(X_low,  dtype=float)
+    Y_low_arr  = np.asarray(Y_low,  dtype=float)
+    Y_high     = np.asarray(Y_high, dtype=float)
 
-    n_feat   = Y_high.shape[1]
-    n_models = n_feat * len(var_names)
-    all_results = {}
-    # per-feature R²: list of (n_feat,) arrays, one per fold per var
+    n_feat    = Y_high.shape[1]
+    n_models  = n_feat * len(var_names)
+    all_results   = {}
     feat_r2_folds = {var: [] for var in var_names}
 
+    if checkpoint_dir:
+        _os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Separate already-checkpointed folds from folds that need running
+    pending_args = []
     for fold_k in range(k):
-        test_idx  = fold_idx[fold_k]
+        if checkpoint_dir:
+            ckpt = _os.path.join(checkpoint_dir, f"kfold_mf_fold{fold_k + 1}.pkl")
+            if _os.path.exists(ckpt):
+                print(f"[{_time.strftime('%H:%M:%S')}] Fold {fold_k + 1}: loading checkpoint {ckpt}", flush=True)
+                with open(ckpt, "rb") as f:
+                    saved = _pickle.load(f)
+                all_results[fold_k + 1] = saved["fold_results"]
+                for var in var_names:
+                    feat_r2_folds[var].append(saved["feat_r2"][var])
+                print_fold_results(fold_k + 1, saved["fold_results"])
+                continue
         train_idx = np.concatenate([fold_idx[i] for i in range(k) if i != fold_k])
+        test_idx  = fold_idx[fold_k]
+        pending_args.append((fold_k, train_idx, test_idx,
+                             X_high_arr, Y_high, X_low_arr, Y_low_arr, var_names))
 
-        print(f"\nMF k-fold {fold_k + 1}/{k}  "
-              f"(HF train={len(train_idx)}, HF test={len(test_idx)}, "
-              f"LF={len(X_low_arr)}) — training {n_models} AR1 models ...")
+    if pending_args:
+        workers = n_workers or min(k, _os.cpu_count() or k)
+        print(f"[{_time.strftime('%H:%M:%S')}] Running {len(pending_args)} fold(s) in parallel "
+              f"with {workers} workers ({n_models} AR1 models per fold) ...", flush=True)
 
-        X_hi_tr = X_high.iloc[train_idx] if hasattr(X_high, 'iloc') else X_high[train_idx]
-        X_hi_te = X_high.iloc[test_idx]  if hasattr(X_high, 'iloc') else X_high[test_idx]
-        Y_hi_tr = Y_high[train_idx]
-        Y_hi_te = Y_high[test_idx]
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_run_kfold_mf_fold, a): a[0] for a in pending_args}
+            for fut in as_completed(futures):
+                fold_k, fold_results, feat_r2, train_secs = fut.result()
+                print(f"[{_time.strftime('%H:%M:%S')}] Fold {fold_k + 1} done in "
+                      f"{train_secs/60:.1f} min", flush=True)
+                all_results[fold_k + 1] = fold_results
+                for var in var_names:
+                    feat_r2_folds[var].append(feat_r2[var])
+                print_fold_results(fold_k + 1, fold_results)
 
-        # Fit scalers on HF training fold only (same principle as single-fidelity)
-        X_sc,      X_hi_tr_norm = fit_transform_X(X_hi_tr)
-        Y_scalers, Y_hi_tr_norm = fit_transform_Y(Y_hi_tr)
-
-        X_lo_norm    = X_sc.transform(X_low_arr)
-        X_hi_te_norm = X_sc.transform(np.asarray(X_hi_te, dtype=float))
-
-        Y_lo_norm = np.stack(
-            [Y_scalers[j].transform(Y_low_arr[:, :, j]) for j in range(len(var_names))],
-            axis=0,
-        ).transpose(1, 2, 0)   # (n_low, n_feat, n_vars)
-
-        gp = MultiFidelityGPWrapper(X_lo_norm, Y_lo_norm, X_hi_tr_norm, Y_hi_tr_norm)
-        gp.train()
-
-        pred_norm, _ = gp.predict_batch(X_hi_te_norm)   # (n_te, n_feat, n_vars)
-
-        fold_results = {}
-        for j, var in enumerate(var_names):
-            t_norm = Y_scalers[j].transform(Y_hi_te[:, :, j])   # (n_te, n_feat)
-            p_norm = pred_norm[:, :, j]
-
-            r2_norm   = r2_score(t_norm, p_norm, multioutput="variance_weighted")
-            rmse_norm = root_mean_squared_error(t_norm, p_norm)
-
-            p_phys = Y_scalers[j].inverse_transform(p_norm)
-            t_phys = Y_hi_te[:, :, j]
-
-            r2_phys   = r2_score(t_phys, p_phys, multioutput="variance_weighted")
-            rmse_phys = root_mean_squared_error(t_phys, p_phys)
-
-            # per-feature R² (physical space), shape (n_feat,)
-            feat_r2 = np.array([
-                r2_score(t_phys[:, fi:fi+1], p_phys[:, fi:fi+1])
-                for fi in range(n_feat)
-            ])
-            feat_r2_folds[var].append(feat_r2)
-
-            fold_results[var] = dict(r2_norm=r2_norm, rmse_norm=rmse_norm,
-                                     r2_phys=r2_phys, rmse_phys=rmse_phys)
-
-        print_fold_results(fold_k + 1, fold_results)
-        all_results[fold_k + 1] = fold_results
+                if checkpoint_dir:
+                    ckpt = _os.path.join(checkpoint_dir, f"kfold_mf_fold{fold_k + 1}.pkl")
+                    with open(ckpt, "wb") as f:
+                        _pickle.dump({"fold_results": fold_results,
+                                      "feat_r2": feat_r2}, f)
+                    print(f"[{_time.strftime('%H:%M:%S')}]   checkpoint saved → {ckpt}", flush=True)
 
     if len(all_results) > 1:
         print_summary(all_results)

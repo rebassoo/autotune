@@ -32,8 +32,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import pickle
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -153,6 +155,7 @@ def run_stage1(cfg, preprocess_mode: str = "both", make_plots: bool = False):
             run_list=run_list,
             snapshots=pp.snapshots,
             variables=pp.variables,
+            n_workers=int(os.environ.get("PREPROCESS_WORKERS", 0)),
         )
     else:
         sim_data = load_and_mask(
@@ -454,7 +457,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
         )
 
 
-def run_stage2_multifidelity(cfg, top_k_params=None):
+def run_stage2_multifidelity(cfg, top_k_params=None, skip_kfold=False, skip_optimize=False):
     """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
 
     High-fidelity data comes from cfg.paths.preprocess_dir (same as the
@@ -471,29 +474,32 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
     lf_dir  = Path(mf.low_fidelity_dir)
     var_names = list(cfg.data.variables)
 
+    def _ts(msg):
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
     # ------------------------------------------------------------------
-    print("=== Stage 2 (multi-fidelity): Load data ===")
+    _ts("=== Stage 2 (multi-fidelity): Load data ===")
     gp_high    = load_gp_proj(str(out_dir / "gp_proj.pkl"))
     X_high     = gp_high["X_train"]
     Y_high     = gp_high["Y_train"]
-    print(f"  HF: X={np.asarray(X_high).shape}, Y={Y_high.shape}")
+    _ts(f"  HF: X={np.asarray(X_high).shape}, Y={Y_high.shape}")
 
     gp_low     = load_gp_proj(str(lf_dir / "gp_proj.pkl"))
     X_low      = gp_low["X_train"]
     Y_low      = gp_low["Y_train"]
-    print(f"  LF: X={np.asarray(X_low).shape}, Y={Y_low.shape}")
+    _ts(f"  LF: X={np.asarray(X_low).shape}, Y={Y_low.shape}")
 
     # ------------------------------------------------------------------
     hf_mask_path = out_dir / "column_mask.pkl"
     lf_mask_path = lf_dir  / "column_mask.pkl"
     if hf_mask_path.exists() and lf_mask_path.exists():
-        print("=== Stage 2 (multi-fidelity): Align LF columns to HF layout ===")
+        _ts("=== Stage 2 (multi-fidelity): Align LF columns to HF layout ===")
         with open(hf_mask_path, "rb") as f:
             hf_mask = pickle.load(f)
         with open(lf_mask_path, "rb") as f:
             lf_mask = pickle.load(f)
         Y_low = align_Y_to_hf_layout(Y_low, lf_mask, hf_mask)
-        print(f"  LF Y after alignment: {Y_low.shape}")
+        _ts(f"  LF Y after alignment: {Y_low.shape}")
     elif Y_low.shape[1] != Y_high.shape[1]:
         raise ValueError(
             f"LF and HF feature counts differ ({Y_low.shape[1]} vs {Y_high.shape[1]}) "
@@ -502,8 +508,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
         )
 
     # ------------------------------------------------------------------
-    if cfg.runtime.train_gp:
-        print("=== Stage 2 (multi-fidelity): K-fold evaluation ===")
+    if cfg.runtime.train_gp and not skip_kfold:
+        _ts("=== Stage 2 (multi-fidelity): K-fold evaluation ===")
         from autotune_gp.evaluate import run_kfold_evaluation_mf
         _kfold_n_zonal   = Y_high.shape[1] // (
             len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2
@@ -514,12 +520,15 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
              else [str(i) for i in range(_kfold_n_zonal)])
             + list(cfg.data.regions_list) + ["global"]
         ) * (len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2)
+        _kfold_ckpt_dir = str(Path(cfg.paths.output_dir) / "kfold_checkpoints")
         run_kfold_evaluation_mf(
             X_high, Y_high,
             X_low,  Y_low,
             var_names=var_names,
             k=5,
             feat_labels=_kfold_feat_lbls,
+            checkpoint_dir=_kfold_ckpt_dir,
+            n_workers=int(os.environ.get("KFOLD_WORKERS", 0)),
         )
 
         if top_k_params is not None:
@@ -534,7 +543,7 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
                           if hasattr(X_high, "iloc") else np.asarray(X_high)[:, top_idx])
             X_low_red  = (X_low.iloc[:, top_idx]
                           if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
-            print(f"\n=== Stage 2 (multi-fidelity): K-fold with top-{top_k_params} params ===")
+            _ts(f"=== Stage 2 (multi-fidelity): K-fold with top-{top_k_params} params ===")
             run_kfold_evaluation_mf(
                 X_high_red, Y_high,
                 X_low_red,  Y_low,
@@ -542,8 +551,11 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
                 k=5,
                 feat_labels=_kfold_feat_lbls,
             )
+    elif skip_kfold:
+        _ts("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (--skip-kfold) ===")
+        top_idx = None
     else:
-        print("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
+        _ts("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
         top_idx = None
 
     # Compute top_idx even when train_gp=False so the surrogate uses reduced params
@@ -562,10 +574,10 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
                   if hasattr(X_high, "iloc") else np.asarray(X_high)[:, top_idx])
         X_low  = (X_low.iloc[:, top_idx]
                   if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
-        print(f"\n  Surrogate and optimization will use top-{top_k_params} params.")
+        _ts(f"  Surrogate and optimization will use top-{top_k_params} params.")
 
     # ------------------------------------------------------------------
-    print("=== Stage 2 (multi-fidelity): Normalise ===")
+    _ts("=== Stage 2 (multi-fidelity): Normalise ===")
     with open(out_dir / "scalers.pkl", "rb") as f:
         saved = pickle.load(f)
     X_sc      = saved["X_pipeline"]
@@ -582,8 +594,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
 
     Y_high_norm = _norm_Y(Y_high)
     Y_low_norm  = _norm_Y(Y_low)
-    print(f"  HF norm: X={X_high_norm.shape}, Y={Y_high_norm.shape}")
-    print(f"  LF norm: X={X_low_norm.shape},  Y={Y_low_norm.shape}")
+    _ts(f"  HF norm: X={X_high_norm.shape}, Y={Y_high_norm.shape}")
+    _ts(f"  LF norm: X={X_low_norm.shape},  Y={Y_low_norm.shape}")
 
     # ------------------------------------------------------------------
     obs_loaded = load_obs(str(out_dir / "obs.pkl"))
@@ -592,11 +604,28 @@ def run_stage2_multifidelity(cfg, top_k_params=None):
     obs_norm   = transform_obs(obs_parts, Y_scalers)
 
     # ------------------------------------------------------------------
-    print("=== Stage 2 (multi-fidelity): Train AR1 GP ===")
-    gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
-    gp.train()
+    _gp_ckpt = Path(cfg.paths.output_dir) / "mf_gp_trained.pkl"
+    _gp_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    if skip_optimize and _gp_ckpt.exists():
+        _ts(f"=== Stage 2 (multi-fidelity): Loading saved GP from {_gp_ckpt} ===")
+        with open(_gp_ckpt, "rb") as f:
+            gp = pickle.load(f)
+        _ts("  GP loaded.")
+    else:
+        _ts("=== Stage 2 (multi-fidelity): Train AR1 GP ===")
+        _t_gp = time.time()
+        gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
+        gp.train()
+        _ts(f"  AR1 GP training complete in {(time.time() - _t_gp)/60:.1f} min.")
+        with open(_gp_ckpt, "wb") as f:
+            pickle.dump(gp, f)
+        _ts(f"  Trained GP saved → {_gp_ckpt}")
 
-    print("=== Stage 2 (multi-fidelity): Save hyperparameters ===")
+    if skip_optimize:
+        _ts("=== Stage 2 (multi-fidelity): Optimization skipped (--skip-optimize) ===")
+        return
+
+    _ts("=== Stage 2 (multi-fidelity): Save hyperparameters ===")
     n_regions = len(cfg.data.regions_list)
     n_snaps   = len(cfg.preprocess.snapshots) if (cfg.preprocess and cfg.preprocess.snapshots) else 2
     n_zonal   = Y_high.shape[1] // n_snaps - n_regions - 1
@@ -724,6 +753,14 @@ def main():
                         "19-param k-fold and a reduced K-param k-fold for comparison, "
                         "then trains the surrogate and runs optimization in the reduced "
                         "K-param space.")
+    p.add_argument("--output-dir", type=str, default=None,
+                   help="Override paths.output_dir from config.")
+    p.add_argument("--skip-kfold", action="store_true", default=False,
+                   help="(Multi-fidelity only) Skip k-fold evaluation and go straight "
+                        "to GP training and optimization.")
+    p.add_argument("--skip-optimize", action="store_true", default=False,
+                   help="(Multi-fidelity only) Run k-fold only; skip GP training and "
+                        "optimization. Loads saved GP checkpoint if available.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -731,6 +768,8 @@ def main():
         cfg.optimize.seed = args.seed
     if args.n_xstarts is not None:
         cfg.optimize.n_xstarts = args.n_xstarts
+    if args.output_dir is not None:
+        cfg.paths.output_dir = args.output_dir
     top_k_params = args.top_k_params
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
@@ -741,7 +780,9 @@ def main():
         run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
     elif args.stage == 2:
         if use_mf:
-            run_stage2_multifidelity(cfg, top_k_params=top_k_params)
+            run_stage2_multifidelity(cfg, top_k_params=top_k_params,
+                                     skip_kfold=args.skip_kfold,
+                                     skip_optimize=args.skip_optimize)
         else:
             run_stage2(cfg)
     else:

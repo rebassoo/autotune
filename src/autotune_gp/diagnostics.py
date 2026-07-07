@@ -48,7 +48,10 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     n, n_params = len(top_rows), main_params.shape[1]
     labels = list(param_names) if param_names is not None else [str(i) for i in range(n_params)]
 
-    fig, ax = plt.subplots(figsize=(11, max(2.0, 0.2 * n + 1.5)))
+    label_len = max(len(lb) for lb in labels) if labels else 8
+    bottom_margin = max(0.25, label_len * 0.055)
+    fig, ax = plt.subplots(figsize=(max(14, n_params * 0.55), max(3.0, 0.2 * n + 1.5)))
+    fig.subplots_adjust(bottom=bottom_margin)
 
     im1 = ax.imshow(np.clip(main_params, 0, 1),
                     aspect='auto', cmap='coolwarm', vmin=0, vmax=1)
@@ -73,7 +76,6 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     fig.colorbar(im1, ax=ax, fraction=0.025, pad=0.065, label='Normalized Parameter Value')
     fig.colorbar(im2, ax=ax, fraction=0.025, pad=0.01, label='Cost')
 
-    plt.tight_layout()
     path = out_dir / f"barcode_params{suffix}.png"
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -120,17 +122,18 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
 
         fig, ax = plt.subplots(figsize=(max(12, n_feat * 0.6), 4))
 
-        ax.scatter(x_range, hf_opt,  label='HF GP optimal', marker='s',
+        hf_label = 'High-res' if is_multifidelity else 'GP'
+        ax.scatter(x_range, hf_opt,  label=f'{hf_label} optimal', marker='s',
                    edgecolors='steelblue', facecolors='none', s=point_size, zorder=4)
-        ax.scatter(x_range, hf_def,  label='HF default (m0)', marker='x',
+        ax.scatter(x_range, hf_def,  label=f'{hf_label} default (m0)', marker='x',
                    color='steelblue', s=point_size, zorder=3)
 
         if is_multifidelity:
             lf_opt = sc.inverse_transform(m_lf[:, :, j])[0]
             lf_def = Y_low_ZRG[0, :, j]
-            ax.scatter(x_range, lf_opt, label='LF GP optimal', marker='s',
+            ax.scatter(x_range, lf_opt, label='Low-res optimal', marker='s',
                        edgecolors='darkorange', facecolors='none', s=point_size, zorder=4)
-            ax.scatter(x_range, lf_def, label='LF default (m0)', marker='x',
+            ax.scatter(x_range, lf_def, label='Low-res default (m0)', marker='x',
                        color='darkorange', s=point_size, zorder=3)
 
         ax.scatter(x_range, obs_vals, label='Obs', marker='^',

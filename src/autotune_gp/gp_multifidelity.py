@@ -102,13 +102,16 @@ class MultiFidelityGPWrapper:
     # ------------------------------------------------------------------
     def train(self):
         """Train one AR1 model per output feature.  Logs progress."""
+        import time as _time
         from emukit.multi_fidelity.models import GPyLinearMultiFidelityModel
         from emukit.multi_fidelity.convert_lists_to_array import convert_xy_lists_to_arrays
         from emukit.multi_fidelity.kernels import LinearMultiFidelityKernel
         import GPy
 
-        n_total = self.n_vars * self.n_feat
-        done    = 0
+        n_total  = self.n_vars * self.n_feat
+        done     = 0
+        t_start  = _time.time()
+        t_batch  = _time.time()
         self._models = []
 
         for var_idx in range(self.n_vars):
@@ -143,7 +146,13 @@ class MultiFidelityGPWrapper:
                 var_models.append(model)
                 done += 1
                 if done % 10 == 0 or done == n_total:
-                    print(f"  AR1 training: {done}/{n_total} models done")
+                    elapsed = _time.time() - t_start
+                    batch_t = _time.time() - t_batch
+                    remaining = (elapsed / done) * (n_total - done)
+                    print(f"  [{_time.strftime('%H:%M:%S')}] AR1 training: {done}/{n_total} models "
+                          f"(last 10: {batch_t:.1f}s, elapsed: {elapsed/60:.1f}min, "
+                          f"est. remaining: {remaining/60:.1f}min)", flush=True)
+                    t_batch = _time.time()
 
             self._models.append(var_models)
 

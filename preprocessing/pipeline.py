@@ -14,6 +14,7 @@ from __future__ import annotations
 import glob as _glob_module
 import json as _json
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -71,7 +72,7 @@ def _prep_sim(ds, prefix, variables):
         if var_cfg.sim_components:
             ds[var_cfg.sim_field] = sum(ds[c] for c in var_cfg.sim_components)
             for comp in var_cfg.sim_components:
-                if comp not in direct_fields:
+                if comp not in direct_fields and comp != var_cfg.sim_field:
                     ds = ds.drop_vars(comp, errors="ignore")
     return ds.rename({v: f"{prefix}_{v}" for v in ds.data_vars})
 
@@ -498,10 +499,12 @@ def build_run_list_generic(
                     continue
                 if snap.max_files is not None:
                     matched = matched[:snap.max_files]
+                if not os.access(matched[0], os.R_OK):
+                    continue
                 member_files[entry] = matched
             elif snap.nc_suffix:
                 f = os.path.join(entry_path, snap.nc_suffix)
-                if os.path.exists(f):
+                if os.path.exists(f) and os.access(f, os.R_OK):
                     member_files[entry] = [f]
 
         per_snapshot_files[snap.label] = member_files
@@ -518,10 +521,21 @@ def build_run_list_generic(
                 return int(first) - 1             # "001.xxx" → index 0
             except ValueError:
                 last = name.rsplit(".", 1)[-1]    # "PPEensemble...m042" → index 42
-                if last.startswith("m"):
+                if last.startswith("m") and last[1:].isdigit():
                     return int(last[1:])
                 raise ValueError(f"Cannot extract member index from casedir name: {name}")
 
+        valid = []
+        skipped = []
+        for m in sim_names:
+            try:
+                _member_to_idx(m)
+                valid.append(m)
+            except ValueError:
+                skipped.append(m)
+        if skipped:
+            print(f"  Skipping {len(skipped)} non-member dir(s): {skipped}")
+        sim_names = valid
         indices = [_member_to_idx(m) for m in sim_names]
         data = params_array[indices]
         if param_names is None:
@@ -537,10 +551,23 @@ def build_run_list_generic(
     }
 
 
+def _load_member_worker(args):
+    """Load and time-average one member's files; returns numpy arrays (picklable)."""
+    member, files, needed_vars = args
+    ds = xr.open_mfdataset(files, combine="by_coords", parallel=False)
+    if "time" in ds.dims:
+        weights = ds.time.dt.days_in_month.astype(float)
+        ds = ds.weighted(weights).mean(dim="time")
+    arrays = {v: ds[v].values for v in needed_vars if v in ds}
+    coords = {c: ds[c].values for c in ("lat", "lon", "ncol") if c in ds.coords or c in ds}
+    return member, arrays, coords
+
+
 def load_and_mask_generic(
     run_list: dict,
     snapshots,              # List[SnapshotCfg]
     variables: dict,        # {var_name: VariableCfg}
+    n_workers: int = 0,     # 0 = use os.cpu_count()
 ) -> dict:
     """
     Load simulation files for each snapshot (averaging over multiple files),
@@ -557,17 +584,35 @@ def load_and_mask_generic(
     sim_names          = run_list["sim_names"]
     per_snapshot_files = run_list["per_snapshot_files"]
 
+    n_workers = n_workers or os.cpu_count() or 1
+    needed_vars = _raw_fields_needed(variables)
+
     snap_datasets: Dict[str, xr.Dataset] = {}
     for snap in snapshots:
         member_files = per_snapshot_files[snap.label]
+        args = [(m, member_files[m], needed_vars) for m in sim_names]
+
+        results: Dict[str, dict] = {}
+        shared_coords = None
+        print(f"  Loading {len(sim_names)} members with {n_workers} workers ...")
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_load_member_worker, a): a[0] for a in args}
+            for i, fut in enumerate(as_completed(futures), 1):
+                member, arrays, coords = fut.result()
+                results[member] = arrays
+                if shared_coords is None:
+                    shared_coords = coords
+                if i % 100 == 0:
+                    print(f"    ... {i}/{len(sim_names)} members loaded")
+
+        # Reconstruct xr.Datasets in member order, then concat
         member_ds_list = []
         for member in sim_names:
-            files = member_files[member]
-            ds = xr.open_mfdataset(files, combine="by_coords")
-            if "time" in ds.dims:
-                weights = ds.time.dt.days_in_month.astype(float)
-                ds = ds.weighted(weights).mean(dim="time")
-            member_ds_list.append(ds)
+            arrays = results[member]
+            data_vars = {v: xr.DataArray(arr, dims=["ncol"]) for v, arr in arrays.items()}
+            coords = {k: ("ncol", v) for k, v in (shared_coords or {}).items() if k != "ncol"}
+            member_ds_list.append(xr.Dataset(data_vars, coords=coords))
+
         snap_ds = xr.concat(member_ds_list, dim="run_label").assign_coords(
             run_label=("run_label", sim_names)
         )
