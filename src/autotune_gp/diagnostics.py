@@ -49,9 +49,11 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     labels = list(param_names) if param_names is not None else [str(i) for i in range(n_params)]
 
     label_len = max(len(lb) for lb in labels) if labels else 8
-    bottom_margin = max(0.25, label_len * 0.055)
-    fig, ax = plt.subplots(figsize=(max(14, n_params * 0.55), max(3.0, 0.2 * n + 1.5)))
-    fig.subplots_adjust(bottom=bottom_margin)
+    label_in  = label_len * 0.065          # approx inches needed for rotated labels
+    plot_in   = max(2.0, 0.2 * n + 1.0)   # inches for the heatmap itself
+    fig_h     = plot_in + label_in + 0.8   # 0.8 for title + colorbars
+    fig, ax = plt.subplots(figsize=(max(14, n_params * 0.55), fig_h))
+    fig.subplots_adjust(bottom=label_in / fig_h)
 
     im1 = ax.imshow(np.clip(main_params, 0, 1),
                     aspect='auto', cmap='coolwarm', vmin=0, vmax=1)
