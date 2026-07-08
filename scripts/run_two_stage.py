@@ -674,8 +674,10 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_kfold=False, skip_opti
         )
 
     n_opt_params  = len(param_names) if param_names else cfg.optimize.n_params
-    bounds_low    = [cfg.optimize.bounds["low"][i]  for i in range(n_opt_params)]
-    bounds_high   = [cfg.optimize.bounds["high"][i] for i in range(n_opt_params)]
+    _bl = cfg.optimize.bounds["low"]
+    _bh = cfg.optimize.bounds["high"]
+    bounds_low    = [_bl[i] if hasattr(_bl, '__getitem__') else _bl for i in range(n_opt_params)]
+    bounds_high   = [_bh[i] if hasattr(_bh, '__getitem__') else _bh for i in range(n_opt_params)]
 
     results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,
