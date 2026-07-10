@@ -11,7 +11,10 @@ def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstart
     rn = np.random.RandomState(seed)
     xstarts = rn.rand(n_xstarts, n_params)
 
-    bounds = [(bounds_low, bounds_high)] * n_params
+    if hasattr(bounds_low, '__len__'):
+        bounds = list(zip(bounds_low, bounds_high))
+    else:
+        bounds = [(bounds_low, bounds_high)] * n_params
     minimizer_kwargs = {"method": method, "bounds": bounds}
 
     def run_one(x0):
