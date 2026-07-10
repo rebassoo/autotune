@@ -377,10 +377,21 @@ def run_stage2(cfg, _preprocess_pkls=None):
         Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
         obs_norm = transform_obs(obs_parts, Y_scalers)
 
-    print("=== Stage 2: Train GP surrogate (full dataset) ===")
-    gp = GPWrapper(X_train_norm, Y_train_norm)
-    if cfg.runtime.train_gp:
-        gp.train(tf_determinism=cfg.runtime.tf_determinism)
+    _sf_gp_ckpt = Path(cfg.paths.output_dir) / "sf_gp_trained.pkl"
+    _sf_gp_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    if _sf_gp_ckpt.exists():
+        print(f"=== Stage 2: Loading saved GP from {_sf_gp_ckpt} ===")
+        with open(_sf_gp_ckpt, "rb") as f:
+            gp = pickle.load(f)
+        print("  GP loaded.")
+    else:
+        print("=== Stage 2: Train GP surrogate (full dataset) ===")
+        gp = GPWrapper(X_train_norm, Y_train_norm)
+        if cfg.runtime.train_gp:
+            gp.train(tf_determinism=cfg.runtime.tf_determinism)
+            with open(_sf_gp_ckpt, "wb") as f:
+                pickle.dump(gp, f)
+            print(f"  Trained GP saved → {_sf_gp_ckpt}")
 
     print("=== Stage 2: Optimize ===")
     backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)
