@@ -468,7 +468,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
         )
 
 
-def run_stage2_multifidelity(cfg, top_k_params=None, skip_kfold=False, skip_optimize=False):
+def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimize=False):
     """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
 
     High-fidelity data comes from cfg.paths.preprocess_dir (same as the
@@ -519,7 +519,7 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_kfold=False, skip_opti
         )
 
     # ------------------------------------------------------------------
-    if cfg.runtime.train_gp and not skip_kfold:
+    if cfg.runtime.train_gp and not skip_gp:
         _ts("=== Stage 2 (multi-fidelity): K-fold evaluation ===")
         from autotune_gp.evaluate import run_kfold_evaluation_mf
         _kfold_n_zonal   = Y_high.shape[1] // (
@@ -562,11 +562,9 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_kfold=False, skip_opti
                 k=5,
                 feat_labels=_kfold_feat_lbls,
             )
-    elif skip_kfold:
-        _ts("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (--skip-kfold) ===")
-        top_idx = None
     else:
-        _ts("=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
+        _ts("=== Stage 2 (multi-fidelity): K-fold and GP training skipped (--skip-gp) ===" if skip_gp
+            else "=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
         top_idx = None
 
     # Compute top_idx even when train_gp=False so the surrogate uses reduced params
@@ -617,12 +615,17 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_kfold=False, skip_opti
     # ------------------------------------------------------------------
     _gp_ckpt = Path(cfg.paths.output_dir) / "mf_gp_trained.pkl"
     _gp_ckpt.parent.mkdir(parents=True, exist_ok=True)
-    if skip_optimize and _gp_ckpt.exists():
+    if _gp_ckpt.exists():
         _ts(f"=== Stage 2 (multi-fidelity): Loading saved GP from {_gp_ckpt} ===")
         with open(_gp_ckpt, "rb") as f:
             gp = pickle.load(f)
         _ts("  GP loaded.")
     else:
+        if skip_gp:
+            raise FileNotFoundError(
+                f"--skip-gp was set but no saved GP found at {_gp_ckpt}. "
+                "Run without --skip-gp first to train and save the GP."
+            )
         _ts("=== Stage 2 (multi-fidelity): Train AR1 GP ===")
         _t_gp = time.time()
         gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
@@ -768,12 +771,12 @@ def main():
                         "K-param space.")
     p.add_argument("--output-dir", type=str, default=None,
                    help="Override paths.output_dir from config.")
-    p.add_argument("--skip-kfold", action="store_true", default=False,
-                   help="(Multi-fidelity only) Skip k-fold evaluation and go straight "
-                        "to GP training and optimization.")
+    p.add_argument("--skip-gp", action="store_true", default=False,
+                   help="(Multi-fidelity only) Skip k-fold and GP training; load saved "
+                        "mf_gp_trained.pkl and go straight to optimization.")
     p.add_argument("--skip-optimize", action="store_true", default=False,
-                   help="(Multi-fidelity only) Run k-fold only; skip GP training and "
-                        "optimization. Loads saved GP checkpoint if available.")
+                   help="(Multi-fidelity only) Run k-fold and GP training, then stop "
+                        "before optimization.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -794,7 +797,7 @@ def main():
     elif args.stage == 2:
         if use_mf:
             run_stage2_multifidelity(cfg, top_k_params=top_k_params,
-                                     skip_kfold=args.skip_kfold,
+                                     skip_gp=args.skip_gp,
                                      skip_optimize=args.skip_optimize)
         else:
             run_stage2(cfg)

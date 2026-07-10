@@ -24,8 +24,8 @@ START=$(date +%s)
     --config configs/perlmutter_mf_ne128_ne32_prod_annual.yaml \
     --stage 2 \
     --output-dir /pscratch/sd/r/rebassoo/autotune/results_mf_ne128_ne32_prod_6params \
-    --top-k-params 6 #\
-#    --skip-kfold
+    --top-k-params 6
+#    --skip-gp
 
 END=$(date +%s)
 echo "End: $(date)"

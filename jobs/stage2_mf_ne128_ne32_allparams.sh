@@ -23,8 +23,8 @@ START=$(date +%s)
 /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/run_two_stage.py \
     --config configs/perlmutter_mf_ne128_ne32_prod_annual.yaml \
     --stage 2 \
-    --output-dir /pscratch/sd/r/rebassoo/autotune/results_mf_ne128_ne32_prod_allparams #\
-#    --skip-kfold
+    --output-dir /pscratch/sd/r/rebassoo/autotune/results_mf_ne128_ne32_prod_allparams \
+    --skip-gp
 
 END=$(date +%s)
 echo "End: $(date)"
