@@ -47,8 +47,9 @@ def _load_projection(results_dir: str):
         return pickle.load(f)
 
 
-def _load_best_params_physical(results_dir: str, preprocess_dir: str):
-    """Return (param_names, best_params_physical) for the top-ranked result."""
+def _load_best_params(results_dir: str, preprocess_dir: str):
+    """Return (param_names, best_params_normalized, best_params_physical)
+    for the top-ranked result."""
     # Load X scaler and param names from preprocess_dir
     scalers_path = Path(preprocess_dir) / "scalers.pkl"
     with open(scalers_path, "rb") as f:
@@ -83,7 +84,7 @@ def _load_best_params_physical(results_dir: str, preprocess_dir: str):
 
     # Inverse-transform to physical space
     best_phys = X_sc.inverse_transform(best_norm.reshape(1, -1))[0]
-    return param_names, best_phys
+    return param_names, best_norm, best_phys
 
 
 # ---------------------------------------------------------------------------
@@ -225,30 +226,39 @@ def plot_zrg_table(scenarios: list[dict], out_dir: Path,
 # ---------------------------------------------------------------------------
 
 def plot_param_table(scenarios: list[dict], out_dir: Path):
-    """Bar chart + CSV table of best physical parameter values per scenario."""
+    """Bar chart of best normalized parameter values per scenario, plus a CSV
+    carrying both the normalized and the physical values.
+
+    The bars are the normalized [0,1] values — the same space as the
+    barcode_params plot in each run's own diagnostics, so the two can be read
+    against each other. (An earlier version divided the *physical* values by
+    the max across scenarios, which pinned whichever scenario happened to be
+    largest at 1.0 regardless of where it actually sat in its range, and lost
+    all meaning for parameters whose range does not start at zero.)
+    """
     # Use the first scenario that has param info as reference for names
     param_names  = scenarios[0]["param_names"]
     n_params     = len(param_names)
     n_scenarios  = len(scenarios)
 
-    # --- CSV ---
+    # --- CSV: physical values, plus normalized for cross-checking the plot ---
     csv_path = out_dir / "comparison_params.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["parameter"] + [sc["label"] for sc in scenarios])
+        w.writerow(["parameter"]
+                   + [f"{sc['label']} (physical)"   for sc in scenarios]
+                   + [f"{sc['label']} (normalized)" for sc in scenarios])
         for i, name in enumerate(param_names):
-            row = [name] + [
-                f"{sc['best_phys'][i]:.6g}" if i < len(sc["best_phys"]) else "N/A"
-                for sc in scenarios
-            ]
-            w.writerow(row)
+            w.writerow(
+                [name]
+                + [f"{sc['best_phys'][i]:.6g}" if i < len(sc["best_phys"]) else "N/A"
+                   for sc in scenarios]
+                + [f"{sc['best_norm'][i]:.4f}" if i < len(sc["best_norm"]) else "N/A"
+                   for sc in scenarios]
+            )
     print(f"  Saved {csv_path}")
 
     # --- Plot: normalized values side by side ---
-    # Normalize each scenario's params to [0,1] range for visual comparison
-    # (they are already in physical space; normalize by the union min/max)
-    all_phys = np.stack([sc["best_phys"][:n_params] for sc in scenarios], axis=0)  # (n_sc, n_params)
-
     label_len = max(len(p) for p in param_names)
     label_in  = label_len * 0.065
     plot_in   = max(3.0, 0.25 * n_params + 1.0)
@@ -256,19 +266,20 @@ def plot_param_table(scenarios: list[dict], out_dir: Path):
     fig, ax   = plt.subplots(figsize=(max(14, n_params * 0.7), fig_h))
     fig.subplots_adjust(bottom=label_in / fig_h)
 
-    width  = 0.8 / n_scenarios
-    colors = [sc["color"] for sc in scenarios]
-    x      = np.arange(n_params)
+    width = 0.8 / n_scenarios
+    x     = np.arange(n_params)
 
     for s, sc in enumerate(scenarios):
-        vals = sc["best_phys"][:n_params]
-        ax.bar(x + s * width - 0.4 + width / 2, vals / (all_phys.max(axis=0) + 1e-30),
-               width=width * 0.9, label=sc["label"], color=sc["color"], alpha=0.7)
+        ax.bar(x + s * width - 0.4 + width / 2, sc["best_norm"][:n_params],
+               width=width * 0.9, label=sc["label"], color=sc["color"], alpha=0.8)
 
     ax.set_xticks(x)
     ax.set_xticklabels(param_names, rotation=90)
-    ax.set_ylabel("Relative parameter value (normalized to max across scenarios)")
-    ax.set_title("Best parameter values by scenario")
+    ax.set_ylim(0, 1)
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_ylabel("Normalized parameter value\n(0 = lower bound, 1 = upper bound)")
+    ax.set_title("Best parameter values by scenario "
+                 "(normalized — same space as the barcode plots)")
     ax.legend()
 
     path = out_dir / "comparison_params.png"
@@ -310,20 +321,23 @@ def main():
     proj_lf = _load_projection(args.lf_dir)
 
     print("Loading best parameter values ...")
-    param_names_hf, best_phys_mf = _load_best_params_physical(
+    param_names_hf, best_norm_mf, best_phys_mf = _load_best_params(
         args.mf_dir, cfg_mf.paths.preprocess_dir)
-    param_names_hf, best_phys_hf = _load_best_params_physical(
+    param_names_hf, best_norm_hf, best_phys_hf = _load_best_params(
         args.hf_dir, cfg_hf.paths.preprocess_dir)
-    param_names_lf, best_phys_lf = _load_best_params_physical(
+    param_names_lf, best_norm_lf, best_phys_lf = _load_best_params(
         args.lf_dir, cfg_lf.paths.preprocess_dir)
 
     scenarios = [
         dict(label="Multi-res ne128+ne32", color="steelblue",
-             proj=proj_mf, param_names=param_names_hf, best_phys=best_phys_mf),
+             proj=proj_mf, param_names=param_names_hf,
+             best_norm=best_norm_mf, best_phys=best_phys_mf),
         dict(label="SF ne128",             color="seagreen",
-             proj=proj_hf, param_names=param_names_hf, best_phys=best_phys_hf),
+             proj=proj_hf, param_names=param_names_hf,
+             best_norm=best_norm_hf, best_phys=best_phys_hf),
         dict(label="SF ne32",              color="darkorange",
-             proj=proj_lf, param_names=param_names_lf, best_phys=best_phys_lf),
+             proj=proj_lf, param_names=param_names_lf,
+             best_norm=best_norm_lf, best_phys=best_phys_lf),
     ]
 
     print("Plotting ZRG comparisons ...")
