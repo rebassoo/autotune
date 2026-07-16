@@ -623,14 +623,6 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             k=top_k_params, param_names=param_names_full,
         )
 
-    # Apply parameter reduction for surrogate training and optimization
-    if top_k_params is not None:
-        X_high = (X_high.iloc[:, top_idx]
-                  if hasattr(X_high, "iloc") else np.asarray(X_high)[:, top_idx])
-        X_low  = (X_low.iloc[:, top_idx]
-                  if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
-        _ts(f"  Surrogate and optimization will use top-{top_k_params} params.")
-
     # ------------------------------------------------------------------
     _ts("=== Stage 2 (multi-fidelity): Normalise ===")
     with open(out_dir / "scalers.pkl", "rb") as f:
@@ -638,8 +630,22 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
     X_sc      = saved["X_pipeline"]
     Y_scalers = [saved[f"Y_pipeline_{v}"] for v in var_names]
 
+    # Normalise with the full parameter set — the saved X scaler was fit on all
+    # n_params physical bounds, so it must be handed every column. Parameter
+    # reduction happens afterwards; MinMaxScaler is per-feature, so
+    # normalise-then-slice is identical to slice-then-normalise.
     X_high_norm = X_sc.transform(X_high)
     X_low_norm  = X_sc.transform(X_low)
+
+    # Apply parameter reduction for surrogate training and optimization
+    if top_k_params is not None:
+        X_high = (X_high.iloc[:, top_idx]
+                  if hasattr(X_high, "iloc") else np.asarray(X_high)[:, top_idx])
+        X_low  = (X_low.iloc[:, top_idx]
+                  if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
+        X_high_norm = np.asarray(X_high_norm)[:, top_idx]
+        X_low_norm  = np.asarray(X_low_norm)[:, top_idx]
+        _ts(f"  Surrogate and optimization will use top-{top_k_params} params.")
 
     def _norm_Y(Y):
         return np.stack(
