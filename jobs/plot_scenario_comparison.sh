@@ -15,10 +15,10 @@ cd /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/autotune
 export PYTHONUNBUFFERED=1
 
 /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/plot_scenario_comparison.py \
-    --mf-dir    /pscratch/sd/r/rebassoo/autotune/results_mf_ne128_ne32_prod_allparams_50starts \
+    --mf-dir    /pscratch/sd/r/rebassoo/autotune/results_mf_ne128_ne32_prod_allparams_40starts \
     --mf-config configs/perlmutter_mf_ne128_ne32_prod_annual.yaml \
-    --hf-dir    /pscratch/sd/r/rebassoo/autotune/results_ne128_prod_50starts \
+    --hf-dir    /pscratch/sd/r/rebassoo/autotune/results_ne128_prod_40starts \
     --hf-config configs/perlmutter_ne128_prod_annual.yaml \
-    --lf-dir    /pscratch/sd/r/rebassoo/autotune/results_ne32_prod_50starts \
+    --lf-dir    /pscratch/sd/r/rebassoo/autotune/results_ne32_prod_40starts \
     --lf-config configs/perlmutter_ne32_prod_annual.yaml \
-    --out-dir   /pscratch/sd/r/rebassoo/autotune/comparison_50starts
+    --out-dir   /pscratch/sd/r/rebassoo/autotune/comparison_40starts
