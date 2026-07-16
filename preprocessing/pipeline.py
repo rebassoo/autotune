@@ -795,6 +795,82 @@ def compute_obs_zrg_generic(
     return {"zrg_obs": zrg_obs}
 
 
+def compute_default_run_zrg(
+    run_list: dict,
+    column_mask: dict,
+    pp,                      # PreprocessCfg
+    var_names: list,
+) -> Optional[dict]:
+    """
+    Compute ZRG averages for the true default/control simulation — the case
+    directory that build_run_list_generic excludes from sim_names because its
+    name has no '.mNNN' member suffix (e.g. 'PPEensemble_16node.ne128pg2_...'
+    rather than '..._full256.ne128pg2_....m000').
+
+    build_run_list_generic's per_snapshot_files retains every directory found
+    on disk (filtering to member-only happens afterwards, via sim_names), so
+    the default run's files are already present there — we just need to
+    identify its name and run it through the same ZRG machinery as a
+    single-member 'ensemble'.
+
+    Returns dict with:
+        default_name  — the case directory name used
+        Y_default_ZRG — (n_feat, n_vars) physical-units array, columns
+                        matching column_mask['valid_feat_indices'] (i.e. the
+                        same layout as Y_train_ZRG)
+    Returns None (with a warning) if the default directory can't be
+    identified unambiguously (0 or >1 candidates).
+    """
+    if pp.snapshots is None:
+        print("  Warning: default-run ZRG computation requires the generic "
+              "(snapshots) pipeline — skipping.")
+        return None
+
+    per_snapshot_files = run_list["per_snapshot_files"]
+    sim_names = set(run_list["sim_names"])
+    candidate_sets = [set(per_snapshot_files[s.label].keys()) - sim_names
+                      for s in pp.snapshots]
+    candidates = set.intersection(*candidate_sets) if candidate_sets else set()
+
+    if len(candidates) != 1:
+        print(f"  Warning: found {len(candidates)} default-run candidate(s) "
+              f"{sorted(candidates)} (expected exactly 1) — skipping default-run "
+              "ZRG computation. Diagnostics will fall back to the first "
+              "ensemble member.")
+        return None
+
+    default_name = next(iter(candidates))
+    print(f"  Default/control run identified: {default_name}")
+
+    mini_run_list = {
+        "sim_names":          [default_name],
+        "per_snapshot_files": per_snapshot_files,
+    }
+    sim_data = load_and_mask_generic(
+        run_list=mini_run_list,
+        snapshots=pp.snapshots,
+        variables=pp.variables,
+        n_workers=1,
+    )
+    zrg_result = compute_zrg_generic(
+        sim_names=[default_name],
+        ppe_dataset_small=sim_data["ppe_dataset_small"],
+        obs_dict=sim_data,
+        control_file=pp.control_file,
+        regions_file=pp.regions_file,
+        variables=pp.variables,
+        snapshots=pp.snapshots,
+    )
+
+    valid = column_mask["valid_feat_indices"]
+    Y_default_ZRG = np.stack(
+        [zrg_result[f"{v}_zrg_ppedataset"].iloc[:, valid].values[0] for v in var_names],
+        axis=-1,
+    )  # (n_feat, n_vars)
+
+    return {"default_name": default_name, "Y_default_ZRG": Y_default_ZRG}
+
+
 def drop_nan_zrg_features_generic(
     zrg_result: dict,
     var_names: list,

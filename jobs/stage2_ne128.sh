@@ -22,7 +22,8 @@ START=$(date +%s)
 /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/run_two_stage.py \
     --config configs/perlmutter_ne128_prod_annual.yaml \
     --stage 2 \
-    --output-dir /pscratch/sd/r/rebassoo/autotune/results_ne128_prod
+    --output-dir /pscratch/sd/r/rebassoo/autotune/results_ne128_prod_50starts \
+    --n-xstarts 50
 
 END=$(date +%s)
 echo "End: $(date)"

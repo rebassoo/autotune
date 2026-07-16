@@ -66,6 +66,7 @@ from preprocessing.pipeline import (
     load_and_mask_generic,
     compute_zrg_generic,
     compute_obs_zrg_generic,
+    compute_default_run_zrg,
     drop_nan_zrg_features_generic,
     stack_all_data,
     make_folds,
@@ -238,6 +239,13 @@ def run_stage1(cfg, preprocess_mode: str = "both", make_plots: bool = False):
             pickle.dump(mask_data, f)
         print(f"  Saved column_mask.pkl  ({len(valid_feat_indices)}/{n_feat_original} features kept)")
 
+        print("=== Stage 1: Compute default/control run ZRG ===")
+        default_result = compute_default_run_zrg(run_list, mask_data, pp, var_names)
+        if default_result is not None:
+            with open(out_dir / "default_run_zrg.pkl", "wb") as f:
+                pickle.dump(default_result, f)
+            print(f"  Saved default_run_zrg.pkl  (default_name={default_result['default_name']})")
+
     # Optional ZRG diagnostic plot
     if make_plots and pp.snapshots is not None:
         from preprocessing.plots import plot_ppe_zrg
@@ -306,6 +314,16 @@ def _zonal_center_lats(cfg, n_zonal_surviving):
     orig_centers = 0.5 * (orig_edges[:-1] + orig_edges[1:])
     surviving    = [i for i in col_mask["valid_feat_indices"] if i < n_zonal_orig]
     return [orig_centers[i] for i in surviving]
+
+
+def _load_default_zrg(preprocess_dir):
+    """Load Y_default_ZRG from default_run_zrg.pkl if present, else None."""
+    path = Path(preprocess_dir) / "default_run_zrg.pkl"
+    if not path.exists():
+        return None
+    with open(path, "rb") as f:
+        saved = pickle.load(f)
+    return saved["Y_default_ZRG"]
 
 
 def run_stage2(cfg, _preprocess_pkls=None):
@@ -482,6 +500,7 @@ def run_stage2(cfg, _preprocess_pkls=None):
             out_dir=diag_dir,
             suffix=f"_seed{cfg.optimize.seed}",
             zonal_center_lats=_zonal_center_lats(cfg, n_zonal),
+            hf_default_ZRG=_load_default_zrg(cfg.paths.preprocess_dir),
         )
 
 
@@ -536,6 +555,14 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         )
 
     # ------------------------------------------------------------------
+    hf_default_ZRG = _load_default_zrg(out_dir)
+    lf_default_ZRG = _load_default_zrg(lf_dir)
+    if lf_default_ZRG is not None and hf_mask_path.exists() and lf_mask_path.exists():
+        lf_default_ZRG = align_Y_to_hf_layout(
+            lf_default_ZRG[np.newaxis], lf_mask, hf_mask
+        )[0]
+
+    # ------------------------------------------------------------------
     if cfg.runtime.train_gp and not skip_gp:
         _ts("=== Stage 2 (multi-fidelity): K-fold evaluation ===")
         from autotune_gp.evaluate import run_kfold_evaluation_mf
@@ -584,8 +611,10 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             else "=== Stage 2 (multi-fidelity): K-fold evaluation skipped (train_gp=false) ===")
         top_idx = None
 
-    # Compute top_idx even when train_gp=False so the surrogate uses reduced params
-    if top_k_params is not None and (not cfg.runtime.train_gp):
+    # Compute top_idx even when the k-fold branch above was skipped (either
+    # because train_gp=False in the config, or --skip-gp was passed on the
+    # CLI) so the surrogate still uses the reduced params.
+    if top_k_params is not None and (not cfg.runtime.train_gp or skip_gp):
         param_names_full = (list(X_high.columns)
                             if hasattr(X_high, "columns")
                             else [str(i) for i in range(np.asarray(X_high).shape[1])])
@@ -746,6 +775,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             n_snaps=n_snaps,
             Y_low_ZRG=Y_low,
             zonal_center_lats=_zonal_center_lats(cfg, n_zonal),
+            hf_default_ZRG=hf_default_ZRG,
+            lf_default_ZRG=lf_default_ZRG,
         )
 
 

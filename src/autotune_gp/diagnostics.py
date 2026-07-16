@@ -12,7 +12,8 @@ import numpy as np
 
 def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                     param_names, var_names, n_zonal, n_regions, regions_list, out_dir,
-                    suffix="", n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None):
+                    suffix="", n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None,
+                    hf_default_ZRG=None, lf_default_ZRG=None):
     """Generate and save all diagnostic plots to out_dir.
 
     suffix            — appended to each filename before the extension.
@@ -23,6 +24,13 @@ def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
     zonal_center_lats — list of actual band-centre latitudes for the surviving zonal
                         bands (e.g. [-65., -55., ..., 75.]).  When None the labels are
                         recomputed from n_zonal, which is wrong if bands were dropped.
+    hf_default_ZRG    — (n_feat, n_vars) ZRG values for the true default/control run
+                        (physical units). When None, falls back to Y_train_ZRG[0] —
+                        which is just the first PPE ensemble member, NOT the true
+                        default, and is only a fallback for older preprocess_dirs
+                        that predate default_run_zrg.pkl.
+    lf_default_ZRG    — same as hf_default_ZRG but for the LF default run
+                        (multi-fidelity only).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -31,11 +39,13 @@ def run_diagnostics(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
     _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix,
                           n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG,
-                          zonal_center_lats=zonal_center_lats)
+                          zonal_center_lats=zonal_center_lats,
+                          hf_default_ZRG=hf_default_ZRG, lf_default_ZRG=lf_default_ZRG)
     _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                           var_names, n_zonal, n_regions, regions_list, out_dir, suffix,
                           n_snaps=n_snaps, Y_low_ZRG=Y_low_ZRG,
-                          zonal_center_lats=zonal_center_lats)
+                          zonal_center_lats=zonal_center_lats,
+                          hf_default_ZRG=hf_default_ZRG, lf_default_ZRG=lf_default_ZRG)
 
 
 def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
@@ -79,21 +89,30 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     fig.colorbar(im2, ax=ax, fraction=0.025, pad=0.01, label='Cost')
 
     path = out_dir / f"barcode_params{suffix}.png"
-    fig.savefig(path, dpi=150)
+    fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved {path}")
 
 
 def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                            var_names, n_zonal, n_regions, regions_list, out_dir, suffix="",
-                           n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None):
+                           n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None,
+                           hf_default_ZRG=None, lf_default_ZRG=None):
     """Scatter plot per variable: GP projection vs default vs obs.
 
     When Y_low_ZRG is provided (multi-fidelity), also shows LF GP prediction
-    and LF default (first LF member).
+    and LF default.
     """
     is_multifidelity = Y_low_ZRG is not None
     best_params_norm = results[top_rows[0], :-1].reshape(1, -1)
+
+    if hf_default_ZRG is None:
+        print("  Warning: no true default-run ZRG provided — falling back to "
+              "the first PPE ensemble member, which is NOT the true default. "
+              "Run scripts/compute_default_run_zrg.py to fix this.")
+        hf_default_ZRG = Y_train_ZRG[0]
+    if is_multifidelity and lf_default_ZRG is None:
+        lf_default_ZRG = Y_low_ZRG[0]
 
     m_hf, _ = gp.predict(best_params_norm)     # (1, n_feat, n_vars)
     m_lf = None
@@ -119,7 +138,7 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
         sc = Y_scalers[j]
 
         hf_opt   = sc.inverse_transform(m_hf[:, :, j])[0]     # (n_feat,)
-        hf_def   = Y_train_ZRG[0, :, j]                       # first HF member
+        hf_def   = hf_default_ZRG[:, j]                       # true default run
         obs_vals = obs_parts[j].values[0]                     # (n_feat,)
 
         fig, ax = plt.subplots(figsize=(max(12, n_feat * 0.6), 4))
@@ -127,15 +146,15 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
         hf_label = 'High-res' if is_multifidelity else 'GP'
         ax.scatter(x_range, hf_opt,  label=f'{hf_label} optimal', marker='s',
                    edgecolors='steelblue', facecolors='none', s=point_size, zorder=4)
-        ax.scatter(x_range, hf_def,  label=f'{hf_label} default (m0)', marker='x',
+        ax.scatter(x_range, hf_def,  label=f'{hf_label} default', marker='x',
                    color='steelblue', s=point_size, zorder=3)
 
         if is_multifidelity:
             lf_opt = sc.inverse_transform(m_lf[:, :, j])[0]
-            lf_def = Y_low_ZRG[0, :, j]
+            lf_def = lf_default_ZRG[:, j]
             ax.scatter(x_range, lf_opt, label='Low-res optimal', marker='s',
                        edgecolors='darkorange', facecolors='none', s=point_size, zorder=4)
-            ax.scatter(x_range, lf_def, label='Low-res default (m0)', marker='x',
+            ax.scatter(x_range, lf_def, label='Low-res default', marker='x',
                        color='darkorange', s=point_size, zorder=3)
 
         ax.scatter(x_range, obs_vals, label='Obs', marker='^',
@@ -163,7 +182,8 @@ def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
 
 def _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                            var_names, n_zonal, n_regions, regions_list, out_dir, suffix="",
-                           n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None):
+                           n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None,
+                           hf_default_ZRG=None, lf_default_ZRG=None):
     """Save projection arrays as a pickle for cross-run comparison plots.
 
     Output file: projection_data{suffix}.pkl
@@ -175,15 +195,23 @@ def _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
     zrg_labels      : list of x-axis label strings (zonal + regional + global)
     obs             : (n_feat, n_vars)  physical units
     hf_optimal      : (n_feat, n_vars)  GP prediction at best params, physical
-    hf_default      : (n_feat, n_vars)  first HF training member, physical
+    hf_default      : (n_feat, n_vars)  true HF default/control run, physical
     lf_optimal      : (n_feat, n_vars) or None  LF prediction at best params
-    lf_default      : (n_feat, n_vars) or None  first LF training member
+    lf_default      : (n_feat, n_vars) or None  true LF default/control run
     best_params_norm: (n_params,)  normalised parameter vector
     best_cost       : float
     """
     is_multifidelity = Y_low_ZRG is not None
     best_params_norm = results[top_rows[0], :-1]
     best_cost        = float(results[top_rows[0], -1])
+
+    if hf_default_ZRG is None:
+        print("  Warning: no true default-run ZRG provided — falling back to "
+              "the first PPE ensemble member, which is NOT the true default. "
+              "Run scripts/compute_default_run_zrg.py to fix this.")
+        hf_default_ZRG = Y_train_ZRG[0]
+    if is_multifidelity and lf_default_ZRG is None:
+        lf_default_ZRG = Y_low_ZRG[0]
 
     m_hf, _ = gp.predict(best_params_norm.reshape(1, -1))
     m_lf     = None
@@ -204,7 +232,7 @@ def _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
     hf_optimal = np.stack(
         [Y_scalers[j].inverse_transform(m_hf[:, :, j])[0] for j in range(n_vars)], axis=1
     )   # (n_feat, n_vars)
-    hf_default = Y_train_ZRG[0]   # (n_feat, n_vars)
+    hf_default = hf_default_ZRG   # (n_feat, n_vars)
     obs        = np.stack([obs_parts[j].values[0] for j in range(n_vars)], axis=1)
 
     lf_optimal = None
@@ -213,7 +241,7 @@ def _save_projection_data(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_par
         lf_optimal = np.stack(
             [Y_scalers[j].inverse_transform(m_lf[:, :, j])[0] for j in range(n_vars)], axis=1
         )
-        lf_default = Y_low_ZRG[0]   # (n_feat, n_vars)
+        lf_default = lf_default_ZRG   # (n_feat, n_vars)
 
     data = dict(
         fidelity_type    = "multi" if is_multifidelity else "single",
