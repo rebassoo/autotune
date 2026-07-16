@@ -81,6 +81,13 @@ class OptimizeCfg:
     max_workers: Optional[int] = None
     param_ordering_constraints: Optional[List[List[str]]] = None  # [[low_param, high_param], ...]
     param_physical_bounds: Optional[Dict[str, List[float]]] = None  # {param_name: [low, high]}
+    # When true, per-parameter optimizer bounds are narrowed to the range the
+    # PPE actually sampled (intersected with `bounds`), instead of searching the
+    # full declared param_physical_bounds. Several params are sampled over only
+    # a fraction of their declared range, so the default [0,1] search lets the
+    # optimizer roam where the GP has no training data and simply reverts to
+    # its prior mean.
+    bounds_from_data: bool = False
 
 @dataclass
 class RuntimeCfg:
@@ -146,6 +153,7 @@ def load_config(path: str | Path) -> Config:
         max_workers=opt.get("max_workers", None),
         param_ordering_constraints=opt.get("param_ordering_constraints", None),
         param_physical_bounds=opt.get("param_physical_bounds", None),
+        bounds_from_data=bool(opt.get("bounds_from_data", False)),
     )
 
     rt = raw.get("runtime", {})

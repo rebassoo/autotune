@@ -316,6 +316,50 @@ def _zonal_center_lats(cfg, n_zonal_surviving):
     return [orig_centers[i] for i in surviving]
 
 
+def _resolve_opt_bounds(cfg, X_norm_list, param_names, n_params, log=print):
+    """Return per-parameter (bounds_low, bounds_high) lists of length n_params.
+
+    By default this just broadcasts the flat cfg.optimize.bounds to every
+    parameter. When cfg.optimize.bounds_from_data is set, each parameter is
+    additionally clamped to the range the training data actually covers.
+
+    This matters because param_physical_bounds is wider than the range the PPE
+    actually sampled for several parameters (e.g. length_fac is declared
+    [0.1, 10] but sampled only up to ~1.9). Searching the full declared box
+    lets the optimizer wander into regions with no training data, where an RBF
+    GP just reverts to its prior mean — and the cost uses only the predictive
+    mean, so nothing penalises being there.
+
+    X_norm_list: list of normalised training-X arrays whose union defines the
+                 supported region (for multi-fidelity, pass both HF and LF).
+    """
+    _bl = cfg.optimize.bounds["low"]
+    _bh = cfg.optimize.bounds["high"]
+    lo = np.array([_bl[i] if hasattr(_bl, "__getitem__") else _bl
+                   for i in range(n_params)], dtype=float)
+    hi = np.array([_bh[i] if hasattr(_bh, "__getitem__") else _bh
+                   for i in range(n_params)], dtype=float)
+
+    if not getattr(cfg.optimize, "bounds_from_data", False):
+        return lo.tolist(), hi.tolist()
+
+    stacked = np.vstack([np.asarray(X, dtype=float) for X in X_norm_list])
+    new_lo = np.maximum(lo, stacked.min(axis=0))
+    new_hi = np.minimum(hi, stacked.max(axis=0))
+
+    names = list(param_names) if param_names else [f"p{i}" for i in range(n_params)]
+    w = max(len(n) for n in names)
+    log("  Optimizer bounds restricted to the sampled range "
+        "(optimize.bounds_from_data=true):")
+    for i, name in enumerate(names):
+        span = hi[i] - lo[i]
+        frac = (new_hi[i] - new_lo[i]) / span if span > 0 else 1.0
+        flag = "  <-- narrowed" if frac < 0.99 else ""
+        log(f"    {name:<{w}}  [{new_lo[i]:.4f}, {new_hi[i]:.4f}]"
+            f"  ({frac * 100:5.1f}% of declared range){flag}")
+    return new_lo.tolist(), new_hi.tolist()
+
+
 def _load_default_zrg(preprocess_dir):
     """Load Y_default_ZRG from default_run_zrg.pkl if present, else None."""
     path = Path(preprocess_dir) / "default_run_zrg.pkl"
@@ -465,11 +509,15 @@ def run_stage2(cfg, _preprocess_pkls=None):
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
+    n_opt_params = len(param_names) if param_names else cfg.optimize.n_params
+    bounds_low, bounds_high = _resolve_opt_bounds(
+        cfg, [X_train_norm], param_names, n_opt_params)
+
     results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,
-        n_params=cfg.optimize.n_params,
-        bounds_low=cfg.optimize.bounds["low"],
-        bounds_high=cfg.optimize.bounds["high"],
+        n_params=n_opt_params,
+        bounds_low=bounds_low,
+        bounds_high=bounds_high,
         seed=cfg.optimize.seed,
         n_xstarts=cfg.optimize.n_xstarts,
         niter=cfg.optimize.niter,
@@ -739,11 +787,10 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
-    n_opt_params  = len(param_names) if param_names else cfg.optimize.n_params
-    _bl = cfg.optimize.bounds["low"]
-    _bh = cfg.optimize.bounds["high"]
-    bounds_low    = [_bl[i] if hasattr(_bl, '__getitem__') else _bl for i in range(n_opt_params)]
-    bounds_high   = [_bh[i] if hasattr(_bh, '__getitem__') else _bh for i in range(n_opt_params)]
+    n_opt_params = len(param_names) if param_names else cfg.optimize.n_params
+    # Union of both fidelities: the AR1 model has data wherever either sampled.
+    bounds_low, bounds_high = _resolve_opt_bounds(
+        cfg, [X_high_norm, X_low_norm], param_names, n_opt_params, log=_ts)
 
     results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,

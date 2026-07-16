@@ -9,17 +9,22 @@ from datetime import datetime
 def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstarts, niter,
                       method, out_dir, max_workers=None):
     rn = np.random.RandomState(seed)
-    xstarts = rn.rand(n_xstarts, n_params)
+
+    lo = np.broadcast_to(np.asarray(bounds_low,  dtype=float), (n_params,))
+    hi = np.broadcast_to(np.asarray(bounds_high, dtype=float), (n_params,))
+
+    # Draw starts inside the actual per-parameter box. A plain rand() in [0,1)
+    # would put most starts outside a narrowed box, where L-BFGS-B just clips
+    # them onto the boundary and every start begins from the same face.
+    xstarts = lo + rn.rand(n_xstarts, n_params) * (hi - lo)
+
     # Each start needs its own RNG stream — reusing one `seed` across all
     # basinhopping calls makes every start follow the identical step/accept
     # sequence, so they only differ by x0. Derive one seed per start from
     # the top-level seed for reproducibility.
     start_seeds = rn.randint(0, 2**31 - 1, size=n_xstarts)
 
-    if hasattr(bounds_low, '__len__'):
-        bounds = list(zip(bounds_low, bounds_high))
-    else:
-        bounds = [(bounds_low, bounds_high)] * n_params
+    bounds = list(zip(lo.tolist(), hi.tolist()))
     minimizer_kwargs = {"method": method, "bounds": bounds}
 
     def run_one(args):

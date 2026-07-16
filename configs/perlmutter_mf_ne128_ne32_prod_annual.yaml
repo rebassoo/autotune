@@ -42,6 +42,9 @@ optimize:
     low: 0.0
     high: 1.0
   n_params: 19
+  # Restrict the search to the range the PPE actually sampled; the declared
+  # param_physical_bounds are much wider than the design for several params.
+  bounds_from_data: true
   max_workers: 1
   param_ordering_constraints:
     - [lambda_low, lambda_high]
