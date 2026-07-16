@@ -36,6 +36,11 @@ import os
 import pickle
 import sys
 import time
+
+try:
+    import cloudpickle as _cpickle
+except ImportError:
+    _cpickle = None
 from pathlib import Path
 
 import numpy as np
@@ -379,19 +384,31 @@ def run_stage2(cfg, _preprocess_pkls=None):
 
     _sf_gp_ckpt = Path(cfg.paths.output_dir) / "sf_gp_trained.pkl"
     _sf_gp_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    gp = None
     if _sf_gp_ckpt.exists():
         print(f"=== Stage 2: Loading saved GP from {_sf_gp_ckpt} ===")
-        with open(_sf_gp_ckpt, "rb") as f:
-            gp = pickle.load(f)
-        print("  GP loaded.")
-    else:
+        try:
+            _loader = _cpickle if _cpickle is not None else pickle
+            with open(_sf_gp_ckpt, "rb") as f:
+                gp = _loader.load(f)
+            print("  GP loaded.")
+        except Exception as e:
+            print(f"  Warning: could not load saved GP ({e}); retraining.")
+            _sf_gp_ckpt.unlink(missing_ok=True)
+            gp = None
+    if gp is None:
         print("=== Stage 2: Train GP surrogate (full dataset) ===")
         gp = GPWrapper(X_train_norm, Y_train_norm)
         if cfg.runtime.train_gp:
             gp.train(tf_determinism=cfg.runtime.tf_determinism)
-            with open(_sf_gp_ckpt, "wb") as f:
-                pickle.dump(gp, f)
-            print(f"  Trained GP saved → {_sf_gp_ckpt}")
+            _saver = _cpickle if _cpickle is not None else pickle
+            try:
+                with open(_sf_gp_ckpt, "wb") as f:
+                    _saver.dump(gp, f)
+                print(f"  Trained GP saved → {_sf_gp_ckpt}")
+            except Exception as e:
+                print(f"  Warning: could not save GP ({e}); will retrain on next run.")
+                _sf_gp_ckpt.unlink(missing_ok=True)
 
     print("=== Stage 2: Optimize ===")
     backend   = get_backend(cfg.runtime.backend, cfg.runtime.device)
