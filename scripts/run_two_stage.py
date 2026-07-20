@@ -524,6 +524,8 @@ def run_stage2(cfg, _preprocess_pkls=None):
         method=cfg.optimize.method,
         out_dir=cfg.paths.output_dir,
         max_workers=cfg.optimize.max_workers,
+        executor=cfg.optimize.executor,
+        checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
     )
 
     print(f"Done. Results: {csv_path}")
@@ -552,7 +554,8 @@ def run_stage2(cfg, _preprocess_pkls=None):
         )
 
 
-def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimize=False):
+def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimize=False,
+                             vary_params=None):
     """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
 
     High-fidelity data comes from cfg.paths.preprocess_dir (same as the
@@ -774,12 +777,57 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         if param_names and low_name in param_names and high_name in param_names:
             constraint_pairs.append((param_names.index(low_name), param_names.index(high_name)))
 
+    # --- Optional subset optimization -------------------------------------
+    # Optimize only `vary_params`, freezing every other parameter at the
+    # control-run default. This reuses the full-dimension GP (no retraining):
+    # the cost function expands the reduced vector back to full length, filling
+    # frozen slots with the default, before calling gp.predict. Constraints are
+    # checked on the full vector.
+    x_default_norm, vary_idx = None, None
+    if vary_params:
+        if param_names is None:
+            raise ValueError("--vary-params needs named parameters (X_train must be a DataFrame).")
+        missing = [p for p in vary_params if p not in param_names]
+        if missing:
+            raise ValueError(f"--vary-params names not in the parameter set: {missing}")
+        with open(out_dir / "default_params.pkl", "rb") as f:
+            _dp = pickle.load(f)
+        if list(_dp["names"]) != list(param_names):
+            raise ValueError("default_params.pkl parameter order does not match the GP's.")
+        x_default_norm = np.asarray(_dp["norm"], dtype=float)
+        vary_idx = [param_names.index(p) for p in vary_params]
+        _ts(f"=== Subset optimization: varying {len(vary_idx)} params, "
+            f"freezing {len(param_names) - len(vary_idx)} at control-run default "
+            f"({_dp['default_name']}) ===")
+        for p in vary_params:
+            _ts(f"    vary {p}")
+
+        # Clip each frozen default to the sampled range the GP actually covers
+        # (HF ∪ LF — the same support bounds_from_data uses), so no cost
+        # evaluation ever asks the GP to extrapolate. A few control-run defaults
+        # sit a hair past the PPE's sampled edge (they are round numbers at the
+        # physical bounds); this snaps them to the nearest sampled value.
+        _stacked = np.vstack([np.asarray(X_high_norm, dtype=float),
+                              np.asarray(X_low_norm, dtype=float)])
+        _samp_lo, _samp_hi = _stacked.min(axis=0), _stacked.max(axis=0)
+        _clipped = np.clip(x_default_norm, _samp_lo, _samp_hi)
+        for i in range(len(param_names)):
+            if not np.isclose(_clipped[i], x_default_norm[i]):
+                _ts(f"    clip {param_names[i]}: default norm "
+                    f"{x_default_norm[i]:.4f} -> {_clipped[i]:.4f} (nearest sampled)")
+        x_default_norm = _clipped
+
     def cost_fn(x):
         x = np.asarray(x, dtype=float)
+        if vary_idx is not None:
+            full = x_default_norm.copy()
+            full[vary_idx] = x
+        else:
+            full = x
         for low_idx, high_idx in constraint_pairs:
-            if x[low_idx] - x[high_idx] > 0:
-                return 1e2 + 1e2 * (x[low_idx] - x[high_idx])
-        m, _ = gp.predict(x)
+            if full[low_idx] - full[high_idx] > 0:
+                return 1e2 + 1e2 * (full[low_idx] - full[high_idx])
+        m, _ = gp.predict(full)
         return zrg_cost_function_mae_weighted(
             m, obs_norm, var_w, zrg_w, dy_w,
             n_zonal=n_zonal, n_regions=n_regions, backend=backend,
@@ -787,10 +835,17 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             zonal_weights=zonal_weights, regional_weights=regional_weights,
         )
 
-    n_opt_params = len(param_names) if param_names else cfg.optimize.n_params
-    # Union of both fidelities: the AR1 model has data wherever either sampled.
-    bounds_low, bounds_high = _resolve_opt_bounds(
-        cfg, [X_high_norm, X_low_norm], param_names, n_opt_params, log=_ts)
+    # Resolve full-dimension bounds, then slice to the varied params.
+    n_full = len(param_names) if param_names else cfg.optimize.n_params
+    bl_full, bh_full = _resolve_opt_bounds(
+        cfg, [X_high_norm, X_low_norm], param_names, n_full, log=_ts)
+    if vary_idx is not None:
+        n_opt_params = len(vary_idx)
+        bounds_low  = [bl_full[i] for i in vary_idx]
+        bounds_high = [bh_full[i] for i in vary_idx]
+    else:
+        n_opt_params = n_full
+        bounds_low, bounds_high = bl_full, bh_full
 
     results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,
@@ -803,8 +858,19 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         method=cfg.optimize.method,
         out_dir=cfg.paths.output_dir,
         max_workers=cfg.optimize.max_workers,
+        executor=cfg.optimize.executor,
+        checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
     )
     print(f"Done. Results: {csv_path}")
+
+    # Expand reduced results back to full parameter dimension so diagnostics
+    # (barcode, ZRG projection, projection_data.pkl) see all 19 params — the
+    # frozen ones appear as constant columns at their default value.
+    if vary_idx is not None:
+        full_res = np.tile(np.append(x_default_norm, 0.0), (results.shape[0], 1))
+        full_res[:, vary_idx] = results[:, :-1]
+        full_res[:, -1]       = results[:, -1]
+        results = full_res
 
     if cfg.diagnostics.enabled:
         from autotune_gp.diagnostics import run_diagnostics
@@ -878,6 +944,12 @@ def main():
     p.add_argument("--skip-optimize", action="store_true", default=False,
                    help="(Multi-fidelity only) Run k-fold and GP training, then stop "
                         "before optimization.")
+    p.add_argument("--vary-params", type=str, default=None, metavar="P1,P2,...",
+                   help="(Multi-fidelity only) Optimize only these comma-separated "
+                        "parameters, freezing all others at the control-run default. "
+                        "Reuses the full GP (use with --skip-gp); no retraining. "
+                        "Requires default_params.pkl in the preprocess dir. Mutually "
+                        "exclusive with --top-k-params.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -888,6 +960,10 @@ def main():
     if args.output_dir is not None:
         cfg.paths.output_dir = args.output_dir
     top_k_params = args.top_k_params
+    vary_params = ([p.strip() for p in args.vary_params.split(",") if p.strip()]
+                   if args.vary_params else None)
+    if top_k_params is not None and vary_params:
+        raise ValueError("--top-k-params and --vary-params are mutually exclusive.")
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
@@ -899,7 +975,8 @@ def main():
         if use_mf:
             run_stage2_multifidelity(cfg, top_k_params=top_k_params,
                                      skip_gp=args.skip_gp,
-                                     skip_optimize=args.skip_optimize)
+                                     skip_optimize=args.skip_optimize,
+                                     vary_params=vary_params)
         else:
             run_stage2(cfg)
     else:

@@ -45,7 +45,12 @@ optimize:
   # Restrict the search to the range the PPE actually sampled; the declared
   # param_physical_bounds are much wider than the design for several params.
   bounds_from_data: true
-  max_workers: 1
+  # GPy is not thread-safe (kernel slice state lives on the shared model
+  # object), so starts are parallelised across forked processes instead.
+  # The GP is ~7.7 GB resident; 32 workers is ~245 GB worst case if
+  # copy-on-write shares nothing, against 512 GB/node.
+  executor: process
+  max_workers: 32
   param_ordering_constraints:
     - [lambda_low, lambda_high]
   param_physical_bounds:

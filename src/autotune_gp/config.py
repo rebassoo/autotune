@@ -88,6 +88,11 @@ class OptimizeCfg:
     # optimizer roam where the GP has no training data and simply reverts to
     # its prior mean.
     bounds_from_data: bool = False
+    # 'thread' (default) or 'process'. Multi-fidelity must use 'process': GPy
+    # keeps kernel slice state on the shared model object, so threading its
+    # predict races and crashes. Single-fidelity must stay on 'thread' — it is
+    # ESEm/GPflow, and TensorFlow does not survive fork.
+    executor: str = "thread"
 
 @dataclass
 class RuntimeCfg:
@@ -154,6 +159,7 @@ def load_config(path: str | Path) -> Config:
         param_ordering_constraints=opt.get("param_ordering_constraints", None),
         param_physical_bounds=opt.get("param_physical_bounds", None),
         bounds_from_data=bool(opt.get("bounds_from_data", False)),
+        executor=str(opt.get("executor", "thread")).lower(),
     )
 
     rt = raw.get("runtime", {})
