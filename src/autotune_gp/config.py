@@ -100,6 +100,13 @@ class RuntimeCfg:
     backend: BackendName = "numpy"
     device: DeviceName = "cpu"
     tf_determinism: bool = False
+    # Single-fidelity GP library: 'esem' (default, GPflow joint model — the
+    # historical behaviour) or 'gpy' (independent per-feature GPy models, like
+    # the multi-fidelity path). 'gpy' pickles and forks, so it enables GP
+    # save/reload and the process executor for single-fidelity. Ignored by the
+    # multi-fidelity path (always GPy/emukit). NOTE distinct from `backend`
+    # above, which is the cost-function compute backend (numpy/torch/cupy).
+    sf_gp_backend: str = "esem"
 
 @dataclass
 class DiagnosticsCfg:
@@ -168,6 +175,7 @@ def load_config(path: str | Path) -> Config:
         backend=str(rt.get("backend", "numpy")).lower(),  # type: ignore
         device=str(rt.get("device", "cpu")).lower(),      # type: ignore
         tf_determinism=bool(rt.get("tf_determinism", True)),
+        sf_gp_backend=str(rt.get("sf_gp_backend", "esem")).lower(),
     )
 
     diag_raw = raw.get("diagnostics", {})

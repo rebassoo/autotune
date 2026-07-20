@@ -405,6 +405,11 @@ def run_stage2(cfg, _preprocess_pkls=None):
     X_train     = gp_loaded["X_train"]
     Y_train_ZRG = gp_loaded["Y_train"]
 
+    # Single-fidelity GP backend: 'esem' (default) or 'gpy'.
+    _sf_backend = getattr(cfg.runtime, "sf_gp_backend", "esem")
+    if _sf_backend not in ("esem", "gpy"):
+        raise ValueError(f"runtime.sf_gp_backend must be 'esem' or 'gpy', got {_sf_backend!r}")
+
     print("=== Stage 2: K-fold surrogate evaluation ===")
     if not kfold_pkl.exists():
         print(f"  kfold_data.pkl not found in {out_dir} — skipping k-fold evaluation.")
@@ -412,7 +417,11 @@ def run_stage2(cfg, _preprocess_pkls=None):
     else:
         with open(kfold_pkl, "rb") as f:
             kfold_data = pickle.load(f)
-        run_kfold_evaluation(kfold_data["folds"], train_gp=cfg.runtime.train_gp)
+        # gp_backend must match the deployed surrogate. The 'gpy' path uses no
+        # TensorFlow, so a later process-executor fork during optimization is
+        # safe; the ESEm path runs TF but only ever uses the thread executor.
+        run_kfold_evaluation(kfold_data["folds"], train_gp=cfg.runtime.train_gp,
+                             gp_backend=_sf_backend)
 
     print("=== Stage 2: Normalise (full dataset) ===")
     var_names = cfg.data.variables
@@ -444,11 +453,15 @@ def run_stage2(cfg, _preprocess_pkls=None):
         Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
         obs_norm = transform_obs(obs_parts, Y_scalers)
 
-    _sf_gp_ckpt = Path(cfg.paths.output_dir) / "sf_gp_trained.pkl"
+    # Single-fidelity GP backend ('esem' default, or 'gpy') was resolved above.
+    # Separate checkpoint filenames so switching backends never loads the wrong
+    # object.
+    _ckpt_name  = "sf_gp_trained.pkl" if _sf_backend == "esem" else "sf_gp_gpy_trained.pkl"
+    _sf_gp_ckpt = Path(cfg.paths.output_dir) / _ckpt_name
     _sf_gp_ckpt.parent.mkdir(parents=True, exist_ok=True)
     gp = None
     if _sf_gp_ckpt.exists():
-        print(f"=== Stage 2: Loading saved GP from {_sf_gp_ckpt} ===")
+        print(f"=== Stage 2: Loading saved GP ({_sf_backend}) from {_sf_gp_ckpt} ===")
         try:
             _loader = _cpickle if _cpickle is not None else pickle
             with open(_sf_gp_ckpt, "rb") as f:
@@ -459,8 +472,12 @@ def run_stage2(cfg, _preprocess_pkls=None):
             _sf_gp_ckpt.unlink(missing_ok=True)
             gp = None
     if gp is None:
-        print("=== Stage 2: Train GP surrogate (full dataset) ===")
-        gp = GPWrapper(X_train_norm, Y_train_norm)
+        print(f"=== Stage 2: Train GP surrogate ({_sf_backend} backend, full dataset) ===")
+        if _sf_backend == "gpy":
+            from autotune_gp.gp_gpy import SingleFidelityGPyWrapper
+            gp = SingleFidelityGPyWrapper(X_train_norm, Y_train_norm)
+        else:
+            gp = GPWrapper(X_train_norm, Y_train_norm)
         if cfg.runtime.train_gp:
             gp.train(tf_determinism=cfg.runtime.tf_determinism)
             _saver = _cpickle if _cpickle is not None else pickle
@@ -513,6 +530,19 @@ def run_stage2(cfg, _preprocess_pkls=None):
     bounds_low, bounds_high = _resolve_opt_bounds(
         cfg, [X_train_norm], param_names, n_opt_params)
 
+    # ESEm/GPflow can only parallelise starts across threads (it does not fork);
+    # GPy is not thread-safe but forks cleanly, so it must use the process
+    # executor. Pick the executor from the backend rather than trusting the
+    # config, so an SF config never lands on a crashing thread+GPy combination.
+    _sf_executor   = "process" if _sf_backend == "gpy" else "thread"
+    _sf_maxworkers = cfg.optimize.max_workers
+    if _sf_backend == "gpy" and _sf_maxworkers is None:
+        _sf_maxworkers = 32     # match the multi-fidelity default; avoids
+                                # forking one worker per core on a big node
+    if _sf_executor != cfg.optimize.executor:
+        print(f"  Note: single-fidelity '{_sf_backend}' backend uses the "
+              f"{_sf_executor} executor (max_workers={_sf_maxworkers}).")
+
     results, top_rows, csv_path = optimize_parallel(
         cost_fn=cost_fn,
         n_params=n_opt_params,
@@ -523,8 +553,8 @@ def run_stage2(cfg, _preprocess_pkls=None):
         niter=cfg.optimize.niter,
         method=cfg.optimize.method,
         out_dir=cfg.paths.output_dir,
-        max_workers=cfg.optimize.max_workers,
-        executor=cfg.optimize.executor,
+        max_workers=_sf_maxworkers,
+        executor=_sf_executor,
         checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
     )
 
@@ -950,6 +980,11 @@ def main():
                         "Reuses the full GP (use with --skip-gp); no retraining. "
                         "Requires default_params.pkl in the preprocess dir. Mutually "
                         "exclusive with --top-k-params.")
+    p.add_argument("--sf-backend", choices=["esem", "gpy"], default=None,
+                   help="(Single-fidelity only) GP library: 'esem' (default, "
+                        "GPflow joint model) or 'gpy' (independent per-feature "
+                        "GPy models — pickles/forks, enables GP save + process "
+                        "executor). Overrides runtime.sf_gp_backend.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -959,6 +994,8 @@ def main():
         cfg.optimize.n_xstarts = args.n_xstarts
     if args.output_dir is not None:
         cfg.paths.output_dir = args.output_dir
+    if args.sf_backend is not None:
+        cfg.runtime.sf_gp_backend = args.sf_backend
     top_k_params = args.top_k_params
     vary_params = ([p.strip() for p in args.vary_params.split(",") if p.strip()]
                    if args.vary_params else None)

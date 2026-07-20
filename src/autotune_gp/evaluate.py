@@ -75,7 +75,7 @@ def _run_kfold_mf_fold(args):
 
     return fold_k, fold_results, feat_r2, train_secs
 
-def evaluate_fold(fold: dict, train_gp: bool = True) -> dict:
+def evaluate_fold(fold: dict, train_gp: bool = True, gp_backend: str = "esem") -> dict:
     """
     Train the surrogate on one fold's train split and evaluate on its test split.
 
@@ -85,6 +85,11 @@ def evaluate_fold(fold: dict, train_gp: bool = True) -> dict:
         Y_train_ZRG, Y_test_ZRG,
         var_names,
         {var}_train / {var}_test for each var in var_names
+
+    gp_backend : 'esem' (default, GPflow joint model) or 'gpy' (independent
+                 per-feature GPy models). Must match the backend used to train
+                 the deployed surrogate, otherwise the reported R² does not
+                 describe the model actually being optimized.
 
     Returns dict keyed by variable name, each with:
         r2_norm, rmse_norm   -- in normalised (StandardScaler) space
@@ -108,7 +113,11 @@ def evaluate_fold(fold: dict, train_gp: bool = True) -> dict:
     }
 
     # Train surrogate
-    gp = GPWrapper(X_train_norm, Y_train_norm)
+    if gp_backend == "gpy":
+        from .gp_gpy import SingleFidelityGPyWrapper
+        gp = SingleFidelityGPyWrapper(X_train_norm, Y_train_norm)
+    else:
+        gp = GPWrapper(X_train_norm, Y_train_norm)
     if train_gp:
         gp.train()
 
@@ -167,15 +176,23 @@ def _print_table(results: dict):
               f"{r['r2_phys']:>10.4f}  {r['rmse_phys']:>12.6f}")
 
 
-def run_kfold_evaluation(folds: list, train_gp: bool = True) -> dict:
-    """Evaluate all folds and return {fold_k: results_dict}."""
+def run_kfold_evaluation(folds: list, train_gp: bool = True,
+                         gp_backend: str = "esem") -> dict:
+    """Evaluate all folds and return {fold_k: results_dict}.
+
+    gp_backend : 'esem' (default) or 'gpy'; forwarded to evaluate_fold so the
+                 k-fold R² reflects the surrogate backend actually deployed.
+                 Runs serially in the main process — the 'gpy' path is pure
+                 GPy/numpy (no TensorFlow), so a later process-executor fork
+                 during optimization stays safe.
+    """
     all_results = {}
     for fold in folds:
         k = fold["k"]
         print(f"Evaluating fold {k}  "
               f"(train={len(fold['train_run_labels'])}, "
-              f"test={len(fold['test_run_labels'])}) ...")
-        results = evaluate_fold(fold, train_gp=train_gp)
+              f"test={len(fold['test_run_labels'])}, backend={gp_backend}) ...")
+        results = evaluate_fold(fold, train_gp=train_gp, gp_backend=gp_backend)
         print_fold_results(k, results)
         all_results[k] = results
 
