@@ -7,6 +7,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend for batch/HPC use
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 import numpy as np
 
 
@@ -86,7 +87,15 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     ax.set_ylim(n - 0.5, -0.5)
 
     fig.colorbar(im1, ax=ax, fraction=0.025, pad=0.065, label='Normalized Parameter Value')
-    fig.colorbar(im2, ax=ax, fraction=0.025, pad=0.01, label='Cost')
+    cbar2 = fig.colorbar(im2, ax=ax, fraction=0.025, pad=0.01, label='Cost')
+    # Without this, matplotlib's default ScalarFormatter silently factors out a
+    # shared offset (e.g. "1e-12+1.104184216") whenever all shown costs are
+    # nearly identical (common here — many random starts often converge to the
+    # same optimum), leaving tick labels like "8.3" that look like the cost
+    # itself but are actually a tiny offset from it — easy to misread.
+    cbar2.formatter = ScalarFormatter(useOffset=False)
+    cbar2.formatter.set_scientific(False)
+    cbar2.update_ticks()
 
     path = out_dir / f"barcode_params{suffix}.png"
     fig.savefig(path, dpi=150, bbox_inches='tight')
