@@ -115,13 +115,24 @@ def plot_parameter_uncertainty(x, stderr, param_names, out_dir, suffix="",
 
     at_bound, bounds_low, bounds_high — the same arrays parameter_uncertainty()
     used/returned. When given:
-      - each parameter's own feasible range [bounds_low[i], bounds_high[i]] is
-        shaded individually, instead of one flat [0,1] band for every column.
-        With optimize.bounds_from_data=true this per-parameter range can be far
-        narrower than [0,1] (e.g. a parameter only ever sampled in [0, 0.19]),
-        and a value that looks safely interior against a [0,1] backdrop can
-        actually be sitting right on its own real ceiling — this makes that
-        visible instead of hiding it.
+      - each parameter's value and stderr are rescaled by its OWN feasible range
+        [bounds_low[i], bounds_high[i]], so every column's box is exactly [0,1]
+        (0 = that parameter's own sampled minimum, 1 = its own sampled maximum),
+        instead of one flat [0,1] band whose meaning silently varies in width
+        per column. With optimize.bounds_from_data=true this per-parameter range
+        can be far narrower than the declared physical bounds (e.g. a parameter
+        only ever sampled over 19% of its declared range) — rescaling to each
+        parameter's own box makes "sitting at 0 or 1" mean the same thing
+        (pinned at the edge of what was ever sampled) for every column, rather
+        than requiring the reader to separately know how wide each box was.
+      - the y-axis is fixed to a common padded window around [0,1]. A whisker
+        that would extend past that window (i.e. the implied uncertainty
+        exceeds the parameter's own sampled range — see plot_parameter_uncertainty
+        callers for why this happens: a near-flat cost direction blows up the
+        inverse-Hessian variance) is truncated at the window edge and its true
+        endpoint value is written next to it as text, instead of either hiding
+        the overshoot or letting one poorly-constrained parameter stretch the
+        whole plot's y-axis until every other column is squashed unreadable.
       - NaN parameters are split by *why* they're NaN: pinned at a (possibly
         narrowed) bound is the deliberate, by-design exclusion documented in
         parameter_uncertainty(); a free (non-boundary) parameter whose Hessian
@@ -129,8 +140,8 @@ def plot_parameter_uncertainty(x, stderr, param_names, out_dir, suffix="",
         two under one "non-invertible Hessian" label (the previous behavior)
         misreports the common case, since most NaNs come from the former.
     Without these three arrays, falls back to the previous flat-[0,1]-band,
-    single-reason-label behavior (e.g. when called from older pickles that
-    didn't save at_bound/bounds).
+    unrescaled, single-reason-label behavior (e.g. when called from older
+    pickles that didn't save at_bound/bounds).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -151,16 +162,26 @@ def plot_parameter_uncertainty(x, stderr, param_names, out_dir, suffix="",
     else:
         n_pinned, n_singular = 0, n_nan   # fall back to the old undifferentiated count
 
+    have_bounds = bounds_low is not None and bounds_high is not None
+    if have_bounds:
+        bl   = np.asarray(bounds_low, dtype=float)
+        bh   = np.asarray(bounds_high, dtype=float)
+        span = np.where(bh > bl, bh - bl, 1.0)   # guard a degenerate zero-width box
+        y    = (x - bl) / span
+        yerr = stderr_plot / span
+    else:
+        y, yerr = x, stderr_plot   # fallback: no per-parameter box to rescale against
+
+    DISPLAY_LO, DISPLAY_HI = -0.5, 1.5   # fixed padded window around every column's own [0,1] box
+    lower, upper = y - yerr, y + yerr
+    clipped_lo = lower < DISPLAY_LO
+    clipped_hi = upper > DISPLAY_HI
+    yerr_low  = y - np.clip(lower, DISPLAY_LO, DISPLAY_HI)
+    yerr_high = np.clip(upper, DISPLAY_LO, DISPLAY_HI) - y
+
     fig, ax = plt.subplots(figsize=(max(10, n_params * 0.5), 5))
     xpos = np.arange(n_params)
-
-    if bounds_low is not None and bounds_high is not None:
-        bl = np.asarray(bounds_low, dtype=float)
-        bh = np.asarray(bounds_high, dtype=float)
-        for i in range(n_params):
-            ax.fill_between([i - 0.4, i + 0.4], bl[i], bh[i], color='0.9', zorder=0)
-    else:
-        ax.axhspan(0, 1, color='0.9', zorder=0)   # fallback: flat normalized parameter range
+    ax.axhspan(0, 1, color='0.9', zorder=0)   # correct for every column now that each is self-rescaled
 
     if at_bound is not None:
         pinned_mask = is_nan & at_bound
@@ -173,17 +194,33 @@ def plot_parameter_uncertainty(x, stderr, param_names, out_dir, suffix="",
         ]:
             if not np.any(mask):
                 continue
-            ax.errorbar(xpos[mask], x[mask], yerr=stderr_plot[mask], fmt='o', color=color,
+            ax.errorbar(xpos[mask], y[mask], yerr=[yerr_low[mask], yerr_high[mask]], fmt='o', color=color,
                        ecolor=color, elinewidth=1.5, capsize=4, markersize=5, zorder=1,
                        label=label)
         ax.legend(fontsize=7, loc='best')
     else:
-        ax.errorbar(xpos, x, yerr=stderr_plot, fmt='o', color='tab:blue',
+        ax.errorbar(xpos, y, yerr=[yerr_low, yerr_high], fmt='o', color='tab:blue',
                    ecolor='tab:blue', elinewidth=1.5, capsize=4, markersize=5, zorder=1)
 
+    # Where a whisker got truncated, write its true endpoint value (in the
+    # same units as x/stderr/bounds_low/bounds_high — i.e. NOT the [0,1]
+    # rescaled fraction) so the overshoot is still visible, just not at the
+    # cost of legibility for every other column.
+    for i in range(n_params):
+        if clipped_lo[i]:
+            true_val = x[i] - stderr[i]
+            ax.annotate(f"{true_val:.3g}", (xpos[i], DISPLAY_LO), xytext=(0, -4),
+                       textcoords='offset points', ha='center', va='top', fontsize=6, color='dimgray')
+        if clipped_hi[i]:
+            true_val = x[i] + stderr[i]
+            ax.annotate(f"{true_val:.3g}", (xpos[i], DISPLAY_HI), xytext=(0, 4),
+                       textcoords='offset points', ha='center', va='bottom', fontsize=6, color='dimgray')
+
+    ax.set_ylim(DISPLAY_LO - 0.15, DISPLAY_HI + 0.15)
     ax.set_xticks(xpos)
     ax.set_xticklabels(labels, rotation=90)
-    ax.set_ylabel('Normalized parameter value')
+    ax.set_ylabel("Fraction of parameter's own sampled range\n(0 = its min, 1 = its max)"
+                 if have_bounds else 'Normalized parameter value')
     title = 'Best-fit parameters ± 1 stderr (inverse-Hessian — relative uncertainty, not a calibrated CI)'
     detail = []
     if n_pinned:
