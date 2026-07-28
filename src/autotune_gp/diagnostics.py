@@ -94,6 +94,105 @@ def _plot_barcode(results, top_rows, param_names, out_dir, suffix=""):
     print(f"  Saved {path}")
 
 
+def plot_parameter_uncertainty(x, stderr, param_names, out_dir, suffix="",
+                               at_bound=None, bounds_low=None, bounds_high=None):
+    """
+    Error-bar plot of the optimizer's best-found (normalized) parameter values
+    +/- 1 stderr, from the inverse-Hessian covariance computed by
+    autotune_gp.uncertainty.parameter_uncertainty(). Only meaningful when that
+    was computed against a real likelihood (optimize.likelihood='gaussian_gp_variance'),
+    and even then is a relative/order-of-magnitude indicator, not a calibrated
+    absolute confidence interval (see that function's docstring for why).
+
+    at_bound, bounds_low, bounds_high — the same arrays parameter_uncertainty()
+    used/returned. When given:
+      - each parameter's own feasible range [bounds_low[i], bounds_high[i]] is
+        shaded individually, instead of one flat [0,1] band for every column.
+        With optimize.bounds_from_data=true this per-parameter range can be far
+        narrower than [0,1] (e.g. a parameter only ever sampled in [0, 0.19]),
+        and a value that looks safely interior against a [0,1] backdrop can
+        actually be sitting right on its own real ceiling — this makes that
+        visible instead of hiding it.
+      - NaN parameters are split by *why* they're NaN: pinned at a (possibly
+        narrowed) bound is the deliberate, by-design exclusion documented in
+        parameter_uncertainty(); a free (non-boundary) parameter whose Hessian
+        still failed to invert is a genuine numerical failure. Conflating the
+        two under one "non-invertible Hessian" label (the previous behavior)
+        misreports the common case, since most NaNs come from the former.
+    Without these three arrays, falls back to the previous flat-[0,1]-band,
+    single-reason-label behavior (e.g. when called from older pickles that
+    didn't save at_bound/bounds).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    x      = np.asarray(x, dtype=float)
+    stderr = np.asarray(stderr, dtype=float)
+    n_params = len(x)
+    labels = list(param_names) if param_names is not None else [str(i) for i in range(n_params)]
+
+    is_nan      = np.isnan(stderr)
+    n_nan       = int(np.sum(is_nan))
+    stderr_plot = np.nan_to_num(stderr, nan=0.0)
+
+    if at_bound is not None:
+        at_bound   = np.asarray(at_bound, dtype=bool)
+        n_pinned   = int(np.sum(is_nan & at_bound))
+        n_singular = int(np.sum(is_nan & ~at_bound))
+    else:
+        n_pinned, n_singular = 0, n_nan   # fall back to the old undifferentiated count
+
+    fig, ax = plt.subplots(figsize=(max(10, n_params * 0.5), 5))
+    xpos = np.arange(n_params)
+
+    if bounds_low is not None and bounds_high is not None:
+        bl = np.asarray(bounds_low, dtype=float)
+        bh = np.asarray(bounds_high, dtype=float)
+        for i in range(n_params):
+            ax.fill_between([i - 0.4, i + 0.4], bl[i], bh[i], color='0.9', zorder=0)
+    else:
+        ax.axhspan(0, 1, color='0.9', zorder=0)   # fallback: flat normalized parameter range
+
+    if at_bound is not None:
+        pinned_mask = is_nan & at_bound
+        singular_mask = is_nan & ~at_bound
+        free_mask = ~is_nan
+        for mask, color, label in [
+            (free_mask,    'tab:blue',   'free (real stderr)'),
+            (pinned_mask,  'tab:gray',   'pinned at bound (excluded, NaN by design)'),
+            (singular_mask, 'tab:red',   'free but non-invertible (NaN — numerical failure)'),
+        ]:
+            if not np.any(mask):
+                continue
+            ax.errorbar(xpos[mask], x[mask], yerr=stderr_plot[mask], fmt='o', color=color,
+                       ecolor=color, elinewidth=1.5, capsize=4, markersize=5, zorder=1,
+                       label=label)
+        ax.legend(fontsize=7, loc='best')
+    else:
+        ax.errorbar(xpos, x, yerr=stderr_plot, fmt='o', color='tab:blue',
+                   ecolor='tab:blue', elinewidth=1.5, capsize=4, markersize=5, zorder=1)
+
+    ax.set_xticks(xpos)
+    ax.set_xticklabels(labels, rotation=90)
+    ax.set_ylabel('Normalized parameter value')
+    title = 'Best-fit parameters ± 1 stderr (inverse-Hessian — relative uncertainty, not a calibrated CI)'
+    detail = []
+    if n_pinned:
+        detail.append(f'{n_pinned} pinned at bound (excluded by design)')
+    if n_singular:
+        detail.append(f'{n_singular} free but non-invertible Hessian')
+    if detail:
+        title += '\n' + '; '.join(detail)
+    ax.set_title(title, fontsize=9)
+    fig.tight_layout()
+
+    path = out_dir / f"parameter_uncertainty{suffix}.png"
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved {path}")
+    return path
+
+
 def _plot_zrg_projections(results, top_rows, gp, Y_train_ZRG, Y_scalers, obs_parts,
                            var_names, n_zonal, n_regions, regions_list, out_dir, suffix="",
                            n_snaps=1, Y_low_ZRG=None, zonal_center_lats=None,
