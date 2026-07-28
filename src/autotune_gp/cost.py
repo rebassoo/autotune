@@ -150,6 +150,7 @@ def zrg_cost_function_gaussian_nll(
     zonal_weights: Optional[List[float]] = None,
     regional_weights: Optional[List[float]] = None,
     var_floor: float = 1e-6,
+    variance_penalty_kappa: float = 0.0,
 ) -> float:
     """
     ZRG Gaussian negative-log-likelihood cost function, using the GP's own
@@ -158,11 +159,34 @@ def zrg_cost_function_gaussian_nll(
     the layout/aggregation structure of `zrg_cost_function_mae_weighted`.
 
     IMPORTANT — squared error, not absolute error: the per-location term is
-        0.5*diff**2/var_clipped + 0.5*log(2*pi*var_clipped)
+        0.5*diff**2/var_clipped + 0.5*log(2*pi*var_clipped) + kappa*var_clipped
     (diff = pred - obs), i.e. this is a Gaussian NLL (MSE-flavored), not an
     absolute-error metric — do not confuse with `zrg_cost_function_mae_weighted`.
     `var_clipped = max(pred_var, var_floor)` guards against division blow-up
     where the GP's predictive variance collapses toward zero.
+
+    variance_penalty_kappa (the `kappa*var_clipped` term, default 0.0 = off):
+    without it, the optimizer can lower cost not only by shrinking the
+    residual but also by moving to a point where pred_var is *larger* --
+    inflating the denominator of the first term shrinks the residual penalty
+    faster than the log term grows back, in some regimes. Corners of the
+    sampled parameter envelope (far from most training points) are exactly
+    where a GP's predictive variance tends to be large, so this term can be
+    exploited to make the cost look better by finding a point the surrogate
+    is simply less certain about, rather than one that is genuinely a better
+    fit. Setting variance_penalty_kappa > 0 adds a direct, monotonic penalty
+    on pred_var itself, so moving to a higher-variance point can no longer
+    net-improve the cost. This is the pessimistic/risk-averse mirror image of
+    the optimistic GP-UCB acquisition rule mu(x) + beta**0.5 * sigma(x) from
+    Srinivas, Krause, Kakade & Seeger, "Gaussian Process Optimization in the
+    Bandit Setting: No Regret and Experimental Design", ICML 2010 (arXiv:0912.3995),
+    Eq. (3.6) -- there, +beta**0.5*sigma is added as an exploration *bonus* to
+    a reward being *maximized*, deliberately favoring uncertain-but-promising
+    points; here the same mean +/- confidence-width device is instead added as
+    a penalty to a cost being *minimized*, deliberately disfavoring uncertain
+    points, since exploration is not wanted once inside an optimizer scoring a
+    fixed, already-trained surrogate. kappa=0.0 recovers the original cost
+    exactly.
 
     Aggregation within each zonal/regional block is a weighted *mean* over
     locations (matching `zrg_cost_function_mae_weighted`'s weighted-mean-MAE
@@ -233,28 +257,32 @@ def zrg_cost_function_gaussian_nll(
     if backend.name == "numpy":
         def _sq_nll_mean(po, pp, pv, weights=None) -> float:
             var_c = np.maximum(pv, var_floor)
-            term  = 0.5 * (pp - po) ** 2 / var_c + 0.5 * np.log(2 * np.pi * var_c)
+            term  = (0.5 * (pp - po) ** 2 / var_c + 0.5 * np.log(2 * np.pi * var_c)
+                     + variance_penalty_kappa * var_c)
             if weights is not None:
                 w = np.asarray(weights, dtype=float)
                 return float(np.sum(w * term) / np.sum(w))
             return float(np.mean(term))
         def _sq_nll_scalar(o, p, v) -> float:
             var_c = max(float(v), var_floor)
-            return float(0.5 * (p - o) ** 2 / var_c + 0.5 * np.log(2 * np.pi * var_c))
+            return float(0.5 * (p - o) ** 2 / var_c + 0.5 * np.log(2 * np.pi * var_c)
+                         + variance_penalty_kappa * var_c)
 
     elif backend.name == "cupy":
         cp = backend.xp
         def _sq_nll_mean(po, pp, pv, weights=None) -> float:
             po, pp, pv = cp.asarray(po), cp.asarray(pp), cp.asarray(pv)
             var_c = cp.maximum(pv, var_floor)
-            term  = 0.5 * (pp - po) ** 2 / var_c + 0.5 * cp.log(2 * cp.pi * var_c)
+            term  = (0.5 * (pp - po) ** 2 / var_c + 0.5 * cp.log(2 * cp.pi * var_c)
+                     + variance_penalty_kappa * var_c)
             if weights is not None:
                 w = cp.asarray(weights)
                 return float((cp.sum(w * term) / cp.sum(w)).get())
             return float(cp.mean(term).get())
         def _sq_nll_scalar(o, p, v) -> float:
             var_c = max(float(v), var_floor)
-            return float(0.5 * (float(p) - float(o)) ** 2 / var_c + 0.5 * float(cp.log(2 * cp.pi * var_c)))
+            return float(0.5 * (float(p) - float(o)) ** 2 / var_c + 0.5 * float(cp.log(2 * cp.pi * var_c))
+                         + variance_penalty_kappa * var_c)
 
     elif backend.name == "torch":
         torch = backend.xp
@@ -264,7 +292,8 @@ def zrg_cost_function_gaussian_nll(
             pp = torch.as_tensor(pp, device=dev)
             pv = torch.as_tensor(pv, device=dev)
             var_c = torch.clamp(pv, min=var_floor)
-            term  = 0.5 * (pp - po) ** 2 / var_c + 0.5 * torch.log(2 * torch.pi * var_c)
+            term  = (0.5 * (pp - po) ** 2 / var_c + 0.5 * torch.log(2 * torch.pi * var_c)
+                     + variance_penalty_kappa * var_c)
             if weights is not None:
                 w = torch.as_tensor(weights, dtype=term.dtype, device=dev)
                 return float((torch.sum(w * term) / torch.sum(w)).detach().cpu().item())
@@ -272,7 +301,8 @@ def zrg_cost_function_gaussian_nll(
         def _sq_nll_scalar(o, p, v) -> float:
             var_c = max(float(v), var_floor)
             return float(0.5 * (float(p) - float(o)) ** 2 / var_c
-                         + 0.5 * float(np.log(2 * np.pi * var_c)))
+                         + 0.5 * float(np.log(2 * np.pi * var_c))
+                         + variance_penalty_kappa * var_c)
 
     else:
         raise ValueError(f"Unsupported backend: {backend.name!r}")
@@ -317,3 +347,74 @@ def zrg_cost_function_gaussian_nll(
         total_cost += snap_weight * snap_cost
 
     return total_cost
+
+
+def build_training_coverage_tree(X_norm_list, bounds_low, bounds_high):
+    """
+    Build a KD-tree over the training ensemble (e.g. HF and LF X arrays,
+    passed as X_norm_list), rescaled so each dimension spans its own
+    [bounds_low, bounds_high] as [0, 1] -- the same per-parameter rescaling
+    already used for bounds_from_data and the uncertainty/comparison plots,
+    so every dimension contributes comparably to the distance metric instead
+    of wide-range dimensions dominating it.
+
+    Returns (tree, threshold). threshold is the training set's own maximum
+    internal nearest-neighbor distance -- i.e. the distance between the
+    single most isolated pair of training points anywhere in the ensemble.
+    This is the natural, data-derived scale training_distance_penalty() uses
+    to decide whether a candidate point is farther from the nearest training
+    point than the training data ever is from itself.
+    """
+    from scipy.spatial import cKDTree
+
+    bl = np.asarray(bounds_low, dtype=float)
+    bh = np.asarray(bounds_high, dtype=float)
+    span = np.where(bh > bl, bh - bl, 1.0)
+
+    X_train = np.vstack([np.asarray(X, dtype=float) for X in X_norm_list])
+    Xr = (X_train - bl) / span
+
+    tree = cKDTree(Xr)
+    d_self, _ = tree.query(Xr, k=2)          # k=2: nearest OTHER point, not itself
+    threshold = float(d_self[:, 1].max())
+    return tree, threshold
+
+
+def training_distance_penalty(x, tree, threshold, lam, bounds_low, bounds_high):
+    """
+    Penalty discouraging the optimizer from selecting a joint parameter
+    combination far from any point in the training ensemble, even when
+    every individual dimension stays within its own bounds_from_data range
+    -- per-dimension box bounds say nothing about whether that specific
+    *combination* was ever jointly sampled.
+
+    penalty(x) = lam * max(0, dist(x, nearest training point) - threshold)
+
+    Zero for any point no farther from the training data than the training
+    data already is from itself (a trust-region-style hinge, not a blanket
+    penalty on every point outside the training cloud's exact center).
+    lam=0.0 (the default) disables this entirely and returns 0.0 without
+    even querying the tree.
+
+    This is NOT part of the Gaussian NLL -- it's a separate, additive
+    regularization term. Combined with a genuine likelihood, the resulting
+    cost is a negative log-POSTERIOR (likelihood x an informal "prior" that
+    distrusts unexplored joint combinations) rather than a pure
+    log-likelihood; this remains entirely valid to run the Laplace/
+    inverse-Hessian approximation (autotune_gp.uncertainty.parameter_uncertainty)
+    against -- MAP + inverse-Hessian-of-negative-log-posterior is standard
+    Bayesian practice, not a departure from it.
+
+    x, bounds_low, bounds_high must be in the same (full-dimension) space
+    the tree was built in -- see build_training_coverage_tree.
+    """
+    if lam == 0.0:
+        return 0.0
+
+    bl = np.asarray(bounds_low, dtype=float)
+    bh = np.asarray(bounds_high, dtype=float)
+    span = np.where(bh > bl, bh - bl, 1.0)
+    xr = (np.asarray(x, dtype=float) - bl) / span
+
+    dist, _ = tree.query(xr.reshape(1, -1), k=1)
+    return float(lam * max(0.0, dist[0] - threshold))

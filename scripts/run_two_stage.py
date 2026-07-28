@@ -53,7 +53,10 @@ from autotune_gp.backend import get_backend
 from autotune_gp.io import load_obs, load_gp_proj, split_zrg_obs
 from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_obs
 from autotune_gp.gp import GPWrapper
-from autotune_gp.cost import zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll
+from autotune_gp.cost import (
+    zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll,
+    build_training_coverage_tree, training_distance_penalty,
+)
 from autotune_gp.optimize import optimize_parallel
 from autotune_gp.uncertainty import parameter_uncertainty
 from autotune_gp.evaluate import run_kfold_evaluation, select_top_params_hf
@@ -860,24 +863,40 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                 return 1e2 + 1e2 * (full[low_idx] - full[high_idx])
         m, v = gp.predict(full)
         if cfg.optimize.likelihood == "gaussian_gp_variance":
-            return zrg_cost_function_gaussian_nll(
+            base_cost = zrg_cost_function_gaussian_nll(
                 m, v, obs_norm, var_w, zrg_w, dy_w,
                 n_zonal=n_zonal, n_regions=n_regions, backend=backend,
                 var_names=list(var_names),
                 zonal_weights=zonal_weights, regional_weights=regional_weights,
                 var_floor=cfg.optimize.var_floor,
+                variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
             )
-        return zrg_cost_function_mae_weighted(
-            m, obs_norm, var_w, zrg_w, dy_w,
-            n_zonal=n_zonal, n_regions=n_regions, backend=backend,
-            var_names=list(var_names),
-            zonal_weights=zonal_weights, regional_weights=regional_weights,
+        else:
+            base_cost = zrg_cost_function_mae_weighted(
+                m, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+            )
+        # full-dimension: distance is evaluated on the full 19-param point
+        # (frozen params included), against the tree built over the same
+        # full-dimension training ensemble -- see below, resolved after
+        # bl_full/bh_full since cost_fn is only ever *called* later, once
+        # optimize_parallel starts (closures resolve names at call time).
+        return base_cost + training_distance_penalty(
+            full, _coverage_tree, _coverage_threshold,
+            cfg.optimize.training_distance_penalty_lambda, bl_full, bh_full,
         )
 
     # Resolve full-dimension bounds, then slice to the varied params.
     n_full = len(param_names) if param_names else cfg.optimize.n_params
     bl_full, bh_full = _resolve_opt_bounds(
         cfg, [X_high_norm, X_low_norm], param_names, n_full, log=_ts)
+    _coverage_tree, _coverage_threshold = build_training_coverage_tree(
+        [X_high_norm, X_low_norm], bl_full, bh_full)
+    if cfg.optimize.training_distance_penalty_lambda:
+        _ts(f"  Training-coverage penalty active: lambda={cfg.optimize.training_distance_penalty_lambda}, "
+            f"threshold={_coverage_threshold:.4f} (training ensemble's own max internal spacing)")
     if vary_idx is not None:
         n_opt_params = len(vary_idx)
         bounds_low  = [bl_full[i] for i in vary_idx]

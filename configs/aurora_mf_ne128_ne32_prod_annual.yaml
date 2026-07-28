@@ -54,6 +54,8 @@ optimize:
   # Enables the post-hoc parameter-uncertainty report below.
   likelihood: gaussian_gp_variance
   # var_floor: 1e-6   # default; uncomment to override
+  # variance_penalty_kappa: 1.0   # penalize high-variance points directly; default is 0.0 (off) -- tested, modest effect only, reverted to off
+  # training_distance_penalty_lambda: 1.0   # penalize joint distance to nearest training point beyond the ensemble's own internal spacing; default is 0.0 (off)
   param_ordering_constraints:
     - [lambda_low, lambda_high]
   param_physical_bounds:

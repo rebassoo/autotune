@@ -20,7 +20,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from autotune_gp.backend import get_backend
 from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_obs
 from autotune_gp.io import split_zrg_obs
-from autotune_gp.cost import zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll
+from autotune_gp.cost import (
+    zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll,
+    build_training_coverage_tree, training_distance_penalty,
+)
 from autotune_gp.optimize import optimize_parallel
 
 
@@ -273,7 +276,7 @@ class TestCostMAEWeighted:
 class TestCostGaussianNLL:
 
     def _call(self, preds, pred_var, obs, dy_w=None, zonal_weights=None,
-              regional_weights=None, var_floor=1e-6):
+              regional_weights=None, var_floor=1e-6, variance_penalty_kappa=0.0):
         return zrg_cost_function_gaussian_nll(
             preds, pred_var, obs, VAR_W, ZRG_W, dy_w or DY_W,
             n_zonal=N_ZONAL, n_regions=N_REGIONS,
@@ -281,6 +284,7 @@ class TestCostGaussianNLL:
             zonal_weights=zonal_weights,
             regional_weights=regional_weights,
             var_floor=var_floor,
+            variance_penalty_kappa=variance_penalty_kappa,
         )
 
     def test_uniform_offset_matches_analytic_nll(self):
@@ -348,6 +352,128 @@ class TestCostGaussianNLL:
         obs   = rng.randn(1, N_FEAT, N_VARS)
         pred_var = rng.rand(1, N_FEAT, N_VARS) + 0.1   # strictly positive
         assert np.isfinite(self._call(preds, pred_var, obs))
+
+    def test_kappa_zero_matches_original_cost(self):
+        """variance_penalty_kappa=0.0 (the default) must recover the cost
+        exactly as it was before this parameter existed."""
+        rng = np.random.RandomState(1)
+        preds = rng.randn(1, N_FEAT, N_VARS)
+        obs   = rng.randn(1, N_FEAT, N_VARS)
+        pred_var = rng.rand(1, N_FEAT, N_VARS) + 0.1
+        cost_default = self._call(preds, pred_var, obs)
+        cost_explicit_zero = self._call(preds, pred_var, obs, variance_penalty_kappa=0.0)
+        assert cost_default == pytest.approx(cost_explicit_zero, rel=1e-12)
+
+    def test_kappa_penalizes_higher_variance_at_fixed_residual(self):
+        """
+        This is the failure mode kappa exists to close. For a fixed residual
+        r=1 (resid**2=1), the uncapped (kappa=0) cost 0.5*r**2/v + 0.5*log(v)
+        is minimized at v=r**2=1 and *decreases* monotonically for any v below
+        that -- so moving from v=0.5 up to v=1.0 (still under-confident
+        relative to the true residual) makes the kappa=0 cost go down, i.e.
+        the optimizer is rewarded for finding a point where pred_var happens
+        to be larger, without the fit itself improving at all.
+
+        kappa=1 analytically shifts that minimum down to v=0.5 (solving
+        kappa = 0.5*r**2/v**2 - 0.5/v at r=1 gives v=0.5), so the same
+        v: 0.5 -> 1.0 move now makes the cost go up instead -- the reward
+        for landing on a higher-variance point is gone.
+        """
+        delta = 1.0
+        preds = np.zeros((1, N_FEAT, N_VARS))
+        obs   = np.full((1, N_FEAT, N_VARS), delta)
+
+        def cost_at(v, kappa):
+            pred_var = np.full((1, N_FEAT, N_VARS), v)
+            return self._call(preds, pred_var, obs, variance_penalty_kappa=kappa)
+
+        # Without the penalty: growing pred_var from 0.5 to 1.0 still lowers cost.
+        assert cost_at(1.0, kappa=0.0) < cost_at(0.5, kappa=0.0)
+
+        # With kappa=1: the same move now raises cost instead.
+        assert cost_at(1.0, kappa=1.0) > cost_at(0.5, kappa=1.0)
+
+    def test_kappa_negative_or_zero_never_worse_than_larger_kappa_at_high_variance(self):
+        """Monotonicity sanity check: at a fixed (residual, variance) point,
+        increasing kappa can only increase (never decrease) the cost, since
+        the added term kappa*var_clipped >= 0 for kappa >= 0."""
+        preds = np.zeros((1, N_FEAT, N_VARS))
+        obs   = np.full((1, N_FEAT, N_VARS), 1.0)
+        pred_var = np.full((1, N_FEAT, N_VARS), 5.0)
+        costs = [self._call(preds, pred_var, obs, variance_penalty_kappa=k)
+                 for k in (0.0, 0.1, 1.0, 10.0)]
+        assert costs == sorted(costs)
+
+
+# ---------------------------------------------------------------------------
+# cost.build_training_coverage_tree / cost.training_distance_penalty
+# ---------------------------------------------------------------------------
+
+class TestTrainingDistancePenalty:
+
+    def _grid_training_set(self):
+        """A simple 2D grid of 'training points' at every combination of
+        {0, 0.5, 1} x {0, 0.5, 1}, with bounds_low=0, bounds_high=1 (i.e.
+        already in rescaled units) -- makes the expected nearest-neighbor
+        geometry easy to reason about by hand."""
+        xs, ys = np.meshgrid([0.0, 0.5, 1.0], [0.0, 0.5, 1.0])
+        X = np.stack([xs.ravel(), ys.ravel()], axis=1)
+        bounds_low, bounds_high = [0.0, 0.0], [1.0, 1.0]
+        return X, bounds_low, bounds_high
+
+    def test_threshold_is_grids_own_max_internal_spacing(self):
+        X, bl, bh = self._grid_training_set()
+        _, threshold = build_training_coverage_tree([X], bl, bh)
+        # every grid point's nearest OTHER grid point is 0.5 away (a neighbor
+        # one step over on the grid), so the training set's own max internal
+        # spacing should be exactly 0.5.
+        assert threshold == pytest.approx(0.5, abs=1e-9)
+
+    def test_lambda_zero_is_always_zero_without_querying_tree(self):
+        X, bl, bh = self._grid_training_set()
+        tree, threshold = build_training_coverage_tree([X], bl, bh)
+        far_point = np.array([100.0, 100.0])   # would be enormous if queried
+        assert training_distance_penalty(far_point, tree, threshold, 0.0, bl, bh) == 0.0
+
+    def test_zero_penalty_inside_training_envelope(self):
+        X, bl, bh = self._grid_training_set()
+        tree, threshold = build_training_coverage_tree([X], bl, bh)
+        # sits exactly on a training point -> distance 0, well under threshold
+        on_point = np.array([0.5, 0.5])
+        assert training_distance_penalty(on_point, tree, threshold, 1.0, bl, bh) == 0.0
+
+    def test_positive_penalty_beyond_threshold(self):
+        X, bl, bh = self._grid_training_set()
+        tree, threshold = build_training_coverage_tree([X], bl, bh)
+        # far outside the grid entirely
+        far_point = np.array([5.0, 5.0])
+        penalty = training_distance_penalty(far_point, tree, threshold, 1.0, bl, bh)
+        assert penalty > 0.0
+
+    def test_penalty_scales_linearly_with_lambda(self):
+        X, bl, bh = self._grid_training_set()
+        tree, threshold = build_training_coverage_tree([X], bl, bh)
+        far_point = np.array([5.0, 5.0])
+        p1 = training_distance_penalty(far_point, tree, threshold, 1.0, bl, bh)
+        p2 = training_distance_penalty(far_point, tree, threshold, 2.0, bl, bh)
+        assert p2 == pytest.approx(2 * p1, rel=1e-9)
+
+    def test_rescaling_by_per_dimension_bounds(self):
+        """A dimension with a much narrower [bounds_low, bounds_high] should
+        contribute proportionally more to the rescaled distance for the same
+        raw offset, exactly like the bounds_from_data convention used
+        elsewhere in this project. Uses a hand-built single-point tree and
+        threshold=0.0 directly, isolating the rescale arithmetic from
+        build_training_coverage_tree's threshold selection (covered by
+        test_threshold_is_grids_own_max_internal_spacing above)."""
+        from scipy.spatial import cKDTree
+        tree = cKDTree(np.array([[0.0, 0.0]]))   # one already-rescaled point, at the origin
+        threshold = 0.0
+        bl, bh = [0.0, 0.0], [1.0, 0.1]   # 2nd dim's sampled range is 10x narrower
+        # offset by 0.1 in dim 0 (10% of its range) vs 0.1 in dim 1 (100% of its range)
+        p_dim0 = training_distance_penalty(np.array([0.1, 0.0]), tree, threshold, 1.0, bl, bh)
+        p_dim1 = training_distance_penalty(np.array([0.0, 0.1]), tree, threshold, 1.0, bl, bh)
+        assert p_dim1 > p_dim0 > 0.0
 
 
 # ---------------------------------------------------------------------------

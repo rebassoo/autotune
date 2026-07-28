@@ -104,6 +104,28 @@ class OptimizeCfg:
     # 'gaussian_gp_variance' likelihood, to guard against blow-up where the GP is
     # (near-)certain. Ignored when likelihood='mae'.
     var_floor: float = 1e-6
+    # Extra +kappa*pred_var term added to the 'gaussian_gp_variance' likelihood
+    # (see autotune_gp.cost.zrg_cost_function_gaussian_nll). Without it, the
+    # optimizer can lower cost by moving to a higher-variance point (shrinking
+    # the residual/var term faster than the log(var) term grows), rather than
+    # to a genuinely better-fitting one -- corners of the sampled envelope are
+    # exactly where GP variance tends to be largest, so this can pull the
+    # optimum toward parameter combinations the surrogate has little training
+    # data for. kappa > 0 makes higher variance strictly costlier, closing that
+    # loophole. Default 0.0 = off, recovers the original cost exactly. Ignored
+    # when likelihood='mae'.
+    variance_penalty_kappa: float = 0.0
+    # Extra penalty (see autotune_gp.cost.training_distance_penalty) added
+    # regardless of likelihood, based on distance (in each parameter's own
+    # bounds_from_data-rescaled space) from the candidate point to the
+    # nearest actual training-ensemble member. Zero unless that distance
+    # exceeds the training ensemble's own worst-case internal spacing, i.e.
+    # this only fires once a candidate is farther from any real training
+    # point than the training data ever is from itself -- catching joint
+    # (multi-parameter) combinations that were never sampled together even
+    # when every individual parameter stays within its own sampled range.
+    # Default 0.0 = off, recovers the original cost exactly.
+    training_distance_penalty_lambda: float = 0.0
 
 @dataclass
 class RuntimeCfg:
@@ -184,6 +206,8 @@ def load_config(path: str | Path) -> Config:
         executor=str(opt.get("executor", "thread")).lower(),
         likelihood=str(opt.get("likelihood", "mae")).lower(),
         var_floor=float(opt.get("var_floor", 1e-6)),
+        variance_penalty_kappa=float(opt.get("variance_penalty_kappa", 0.0)),
+        training_distance_penalty_lambda=float(opt.get("training_distance_penalty_lambda", 0.0)),
     )
 
     rt = raw.get("runtime", {})
