@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from autotune_gp.backend import get_backend
 from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_obs
 from autotune_gp.io import split_zrg_obs
-from autotune_gp.cost import zrg_cost_function_mae_weighted
+from autotune_gp.cost import zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll
 from autotune_gp.optimize import optimize_parallel
 
 
@@ -264,6 +264,90 @@ class TestCostMAEWeighted:
         preds = rng.randn(1, N_FEAT, N_VARS)
         obs   = rng.randn(1, N_FEAT, N_VARS)
         assert np.isfinite(self._call(preds, obs))
+
+
+# ---------------------------------------------------------------------------
+# cost.zrg_cost_function_gaussian_nll
+# ---------------------------------------------------------------------------
+
+class TestCostGaussianNLL:
+
+    def _call(self, preds, pred_var, obs, dy_w=None, zonal_weights=None,
+              regional_weights=None, var_floor=1e-6):
+        return zrg_cost_function_gaussian_nll(
+            preds, pred_var, obs, VAR_W, ZRG_W, dy_w or DY_W,
+            n_zonal=N_ZONAL, n_regions=N_REGIONS,
+            backend=BACKEND,
+            zonal_weights=zonal_weights,
+            regional_weights=regional_weights,
+            var_floor=var_floor,
+        )
+
+    def test_uniform_offset_matches_analytic_nll(self):
+        """
+        With equal var/zrg/dy weights, a uniform offset `delta`, and a uniform
+        predictive variance `v` everywhere, every block/variable/snapshot term
+        is identical, so the weighted combination (weights each summing to 1)
+        collapses to the single per-location NLL term exactly.
+        """
+        delta, v = 1.0, 1.0
+        preds = np.zeros((1, N_FEAT, N_VARS))
+        obs   = np.full((1, N_FEAT, N_VARS), delta)
+        pred_var = np.full((1, N_FEAT, N_VARS), v)
+        expected = 0.5 * delta ** 2 / v + 0.5 * np.log(2 * np.pi * v)
+        assert self._call(preds, pred_var, obs) == pytest.approx(expected, rel=1e-6)
+
+    def test_not_zero_at_zero_residual(self):
+        """Unlike MAE, the NLL is not zero at zero residual — the log(var) term remains."""
+        preds, obs = _uniform_arrays(1.0)
+        pred_var = np.full((1, N_FEAT, N_VARS), 1.0)
+        cost = self._call(preds, pred_var, obs)
+        assert cost == pytest.approx(0.5 * np.log(2 * np.pi), rel=1e-6)
+
+    def test_cost_increases_with_residual_for_fixed_variance(self):
+        pred_var = np.full((1, N_FEAT, N_VARS), 1.0)
+        costs = []
+        for delta in [0.0, 0.5, 2.0, 5.0]:
+            preds = np.zeros((1, N_FEAT, N_VARS))
+            obs   = np.full((1, N_FEAT, N_VARS), delta)
+            costs.append(self._call(preds, pred_var, obs))
+        assert costs == sorted(costs)
+        assert costs[-1] > costs[0]
+
+    def test_var_floor_prevents_blowup(self):
+        preds = np.zeros((1, N_FEAT, N_VARS))
+        obs   = np.full((1, N_FEAT, N_VARS), 1.0)
+        pred_var = np.zeros((1, N_FEAT, N_VARS))   # would divide by zero unclipped
+        cost = self._call(preds, pred_var, obs, var_floor=1e-6)
+        assert np.isfinite(cost)
+
+    def test_raises_on_wrong_n_obs(self):
+        preds = np.zeros((2, N_FEAT, N_VARS))
+        obs   = np.zeros((2, N_FEAT, N_VARS))
+        pred_var = np.ones((2, N_FEAT, N_VARS))
+        with pytest.raises(ValueError, match="n_obs=1"):
+            self._call(preds, pred_var, obs)
+
+    def test_raises_on_pred_var_shape_mismatch(self):
+        preds = np.zeros((1, N_FEAT, N_VARS))
+        obs   = np.zeros((1, N_FEAT, N_VARS))
+        pred_var = np.ones((1, N_FEAT, N_VARS + 1))
+        with pytest.raises(ValueError, match="pred_var has shape"):
+            self._call(preds, pred_var, obs)
+
+    def test_raises_on_wrong_n_feat(self):
+        preds = np.zeros((1, N_FEAT + 1, N_VARS))
+        obs   = np.zeros((1, N_FEAT + 1, N_VARS))
+        pred_var = np.ones((1, N_FEAT + 1, N_VARS))
+        with pytest.raises(ValueError, match="layout mismatch"):
+            self._call(preds, pred_var, obs)
+
+    def test_finite_output(self):
+        rng = np.random.RandomState(42)
+        preds = rng.randn(1, N_FEAT, N_VARS)
+        obs   = rng.randn(1, N_FEAT, N_VARS)
+        pred_var = rng.rand(1, N_FEAT, N_VARS) + 0.1   # strictly positive
+        assert np.isfinite(self._call(preds, pred_var, obs))
 
 
 # ---------------------------------------------------------------------------

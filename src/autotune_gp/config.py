@@ -93,6 +93,17 @@ class OptimizeCfg:
     # predict races and crashes. Single-fidelity must stay on 'thread' — it is
     # ESEm/GPflow, and TensorFlow does not survive fork.
     executor: str = "thread"
+    # Cost function used by the optimizer: 'mae' (default, unchanged historical
+    # behaviour) or 'gaussian_gp_variance' — a Gaussian negative-log-likelihood
+    # that uses the GP's own predictive variance as the noise term (see
+    # autotune_gp.cost.zrg_cost_function_gaussian_nll). Only 'gaussian_gp_variance'
+    # makes the post-hoc parameter-uncertainty report (diagnostics.report_uncertainty)
+    # statistically meaningful.
+    likelihood: str = "mae"
+    # Floor applied to the GP's predictive variance before dividing by it in the
+    # 'gaussian_gp_variance' likelihood, to guard against blow-up where the GP is
+    # (near-)certain. Ignored when likelihood='mae'.
+    var_floor: float = 1e-6
 
 @dataclass
 class RuntimeCfg:
@@ -112,6 +123,10 @@ class RuntimeCfg:
 class DiagnosticsCfg:
     enabled: bool = False
     output_dir: Optional[str] = None  # defaults to paths.output_dir/diagnostics/ if not set
+    # If true (and optimize.likelihood != 'mae'), run a post-hoc parameter-
+    # uncertainty report (inverse-Hessian covariance at the best-found point)
+    # after optimization — see autotune_gp.uncertainty.parameter_uncertainty.
+    report_uncertainty: bool = False
 
 @dataclass
 class MultiFidelityCfg:
@@ -167,6 +182,8 @@ def load_config(path: str | Path) -> Config:
         param_physical_bounds=opt.get("param_physical_bounds", None),
         bounds_from_data=bool(opt.get("bounds_from_data", False)),
         executor=str(opt.get("executor", "thread")).lower(),
+        likelihood=str(opt.get("likelihood", "mae")).lower(),
+        var_floor=float(opt.get("var_floor", 1e-6)),
     )
 
     rt = raw.get("runtime", {})
@@ -182,6 +199,7 @@ def load_config(path: str | Path) -> Config:
     diagnostics = DiagnosticsCfg(
         enabled=bool(diag_raw.get("enabled", False)),
         output_dir=diag_raw.get("output_dir", None),
+        report_uncertainty=bool(diag_raw.get("report_uncertainty", False)),
     )
 
     preprocess = None

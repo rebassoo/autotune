@@ -301,7 +301,18 @@ def main():
     p.add_argument("--lf-dir",    required=True)
     p.add_argument("--lf-config", required=True)
     p.add_argument("--out-dir",   required=True)
+    p.add_argument("--extra-dir", action="append", default=[],
+                    help="Additional results dir beyond mf/hf/lf (repeatable, "
+                         "paired by position with --extra-config/--extra-label).")
+    p.add_argument("--extra-config", action="append", default=[],
+                    help="Config for the corresponding --extra-dir (repeatable).")
+    p.add_argument("--extra-label", action="append", default=[],
+                    help="Label for the corresponding --extra-dir (repeatable).")
     args = p.parse_args()
+
+    if not (len(args.extra_dir) == len(args.extra_config) == len(args.extra_label)):
+        p.error("--extra-dir, --extra-config, and --extra-label must be given "
+                 "the same number of times.")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -340,11 +351,23 @@ def main():
              best_norm=best_norm_lf, best_phys=best_phys_lf),
     ]
 
+    extra_colors = ["purple", "crimson", "goldenrod", "teal"]
+    for i, (d, c, lbl) in enumerate(zip(args.extra_dir, args.extra_config, args.extra_label)):
+        print(f"Loading extra scenario {lbl!r} ...")
+        cfg_extra = load_config(c)
+        proj_extra = _load_projection(d)
+        param_names_extra, best_norm_extra, best_phys_extra = _load_best_params(
+            d, cfg_extra.paths.preprocess_dir)
+        scenarios.append(dict(
+            label=lbl, color=extra_colors[i % len(extra_colors)],
+            proj=proj_extra, param_names=param_names_extra,
+            best_norm=best_norm_extra, best_phys=best_phys_extra))
+
     print("Plotting ZRG comparisons ...")
     plot_zrg_comparison(scenarios, out_dir)
 
-    print("Plotting ZRG tables (PCP, TLWP) ...")
-    plot_zrg_table(scenarios, out_dir)
+    print("Plotting ZRG tables ...")
+    plot_zrg_table(scenarios, out_dir, vars_to_plot=tuple(scenarios[0]["proj"]["var_names"]))
 
     print("Plotting parameter table ...")
     plot_param_table(scenarios, out_dir)

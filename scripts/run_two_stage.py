@@ -53,8 +53,9 @@ from autotune_gp.backend import get_backend
 from autotune_gp.io import load_obs, load_gp_proj, split_zrg_obs
 from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_obs
 from autotune_gp.gp import GPWrapper
-from autotune_gp.cost import zrg_cost_function_mae_weighted
+from autotune_gp.cost import zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll
 from autotune_gp.optimize import optimize_parallel
+from autotune_gp.uncertainty import parameter_uncertainty
 from autotune_gp.evaluate import run_kfold_evaluation, select_top_params_hf
 
 from preprocessing.pipeline import (
@@ -857,7 +858,15 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         for low_idx, high_idx in constraint_pairs:
             if full[low_idx] - full[high_idx] > 0:
                 return 1e2 + 1e2 * (full[low_idx] - full[high_idx])
-        m, _ = gp.predict(full)
+        m, v = gp.predict(full)
+        if cfg.optimize.likelihood == "gaussian_gp_variance":
+            return zrg_cost_function_gaussian_nll(
+                m, v, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+                var_floor=cfg.optimize.var_floor,
+            )
         return zrg_cost_function_mae_weighted(
             m, obs_norm, var_w, zrg_w, dy_w,
             n_zonal=n_zonal, n_regions=n_regions, backend=backend,
@@ -892,6 +901,39 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
     )
     print(f"Done. Results: {csv_path}")
+
+    # Post-hoc parameter-uncertainty report (inverse-Hessian covariance at the
+    # best-found point). Must run *before* the vary_idx results-expansion below:
+    # cost_fn (and therefore its Hessian) operates on the reduced, varied-only
+    # parameter vector, and `results` is still in that reduced dimensionality here.
+    if cfg.diagnostics.report_uncertainty:
+        if cfg.optimize.likelihood == "mae":
+            print("  Skipping parameter-uncertainty report: optimize.likelihood='mae' "
+                  "is not a real log-likelihood, so there's nothing statistically "
+                  "meaningful to compute. Set optimize.likelihood: gaussian_gp_variance "
+                  "to enable this report.")
+        else:
+            unc_diag_dir = Path(cfg.diagnostics.output_dir) if cfg.diagnostics.output_dir \
+                           else Path(cfg.paths.output_dir) / "diagnostics"
+            unc_diag_dir.mkdir(parents=True, exist_ok=True)
+            unc_names = [param_names[i] for i in vary_idx] if vary_idx is not None else param_names
+            print("=== Stage 2 (multi-fidelity): Parameter uncertainty ===")
+            unc = parameter_uncertainty(
+                cost_fn, x_best=results[top_rows[0], :-1],
+                param_names=unc_names, likelihood=cfg.optimize.likelihood,
+                bounds_low=bounds_low, bounds_high=bounds_high,
+            )
+            unc_path = unc_diag_dir / f"parameter_uncertainty_seed{cfg.optimize.seed}.pkl"
+            with open(unc_path, "wb") as f:
+                pickle.dump(unc, f)
+            print(f"  Saved parameter uncertainty → {unc_path}")
+
+            from autotune_gp.diagnostics import plot_parameter_uncertainty
+            plot_parameter_uncertainty(
+                unc["x"], unc["stderr"], unc["param_names"],
+                unc_diag_dir, suffix=f"_seed{cfg.optimize.seed}",
+                at_bound=unc["at_bound"], bounds_low=bounds_low, bounds_high=bounds_high,
+            )
 
     # Expand reduced results back to full parameter dimension so diagnostics
     # (barcode, ZRG projection, projection_data.pkl) see all 19 params — the
