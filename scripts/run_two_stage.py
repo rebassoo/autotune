@@ -55,6 +55,7 @@ from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_o
 from autotune_gp.gp import GPWrapper
 from autotune_gp.cost import (
     zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll,
+    zrg_cost_function_student_t,
     build_training_coverage_tree, training_distance_penalty,
 )
 from autotune_gp.optimize import optimize_parallel
@@ -374,7 +375,7 @@ def _load_default_zrg(preprocess_dir):
     return saved["Y_default_ZRG"]
 
 
-def run_stage2(cfg, _preprocess_pkls=None):
+def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
     """K-fold evaluation + surrogate training + optimization.
 
     Path priority for obs/gp_proj pickles:
@@ -383,6 +384,14 @@ def run_stage2(cfg, _preprocess_pkls=None):
       3. preprocess_dir/obs.pkl / gp_proj.pkl  — fallback if config paths absent
 
     K-fold evaluation is skipped if kfold_data.pkl is not found in preprocess_dir.
+
+    max_folds: if set, only the first `max_folds` of the saved folds are
+    evaluated (e.g. 1 instead of the full 5) -- k-fold here is purely a
+    diagnostic R²/RMSE sanity check on the surrogate, not used by the
+    optimizer itself, so trading fold coverage for wall-clock time is safe.
+    Each GPy fold retrains all n_vars*n_feat independent per-feature models
+    from scratch, so this is O(max_folds) in cost; for a large low-fidelity
+    training set (e.g. ne32's 833 members) that dominates the walltime budget.
     """
     out_dir = Path(cfg.paths.preprocess_dir)
     kfold_pkl = out_dir / "kfold_data.pkl"
@@ -421,10 +430,16 @@ def run_stage2(cfg, _preprocess_pkls=None):
     else:
         with open(kfold_pkl, "rb") as f:
             kfold_data = pickle.load(f)
+        folds_to_run = kfold_data["folds"]
+        if max_folds is not None and max_folds < len(folds_to_run):
+            print(f"  --kfold-folds={max_folds}: evaluating {max_folds}/{len(folds_to_run)} "
+                  "saved folds only (diagnostic R²/RMSE only -- does not affect "
+                  "the surrogate actually used for optimization).")
+            folds_to_run = folds_to_run[:max_folds]
         # gp_backend must match the deployed surrogate. The 'gpy' path uses no
         # TensorFlow, so a later process-executor fork during optimization is
         # safe; the ESEm path runs TF but only ever uses the thread executor.
-        run_kfold_evaluation(kfold_data["folds"], train_gp=cfg.runtime.train_gp,
+        run_kfold_evaluation(folds_to_run, train_gp=cfg.runtime.train_gp,
                              gp_backend=_sf_backend)
 
     print("=== Stage 2: Normalise (full dataset) ===")
@@ -522,17 +537,46 @@ def run_stage2(cfg, _preprocess_pkls=None):
             violation = x[low_idx] - x[high_idx]
             if violation > 0:
                 return 1e2 + 1e2 * violation
-        m, _ = gp.predict(x)
-        return zrg_cost_function_mae_weighted(
-            m, obs_norm, var_w, zrg_w, dy_w,
-            n_zonal=n_zonal, n_regions=n_regions, backend=backend,
-            var_names=list(var_names),
-            zonal_weights=zonal_weights, regional_weights=regional_weights,
+        m, v = gp.predict(x)
+        if cfg.optimize.likelihood == "gaussian_gp_variance":
+            base_cost = zrg_cost_function_gaussian_nll(
+                m, v, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+                var_floor=cfg.optimize.var_floor,
+                variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
+            )
+        elif cfg.optimize.likelihood == "student_t":
+            base_cost = zrg_cost_function_student_t(
+                m, v, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+                var_floor=cfg.optimize.var_floor,
+                variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
+                dof=cfg.optimize.student_t_dof,
+            )
+        else:
+            base_cost = zrg_cost_function_mae_weighted(
+                m, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+            )
+        return base_cost + training_distance_penalty(
+            x, _coverage_tree, _coverage_threshold,
+            cfg.optimize.training_distance_penalty_lambda, bounds_low, bounds_high,
         )
 
     n_opt_params = len(param_names) if param_names else cfg.optimize.n_params
     bounds_low, bounds_high = _resolve_opt_bounds(
         cfg, [X_train_norm], param_names, n_opt_params)
+    _coverage_tree, _coverage_threshold = build_training_coverage_tree(
+        [X_train_norm], bounds_low, bounds_high)
+    if cfg.optimize.training_distance_penalty_lambda:
+        print(f"  Training-coverage penalty active: lambda={cfg.optimize.training_distance_penalty_lambda}, "
+              f"threshold={_coverage_threshold:.4f} (training ensemble's own max internal spacing)")
 
     # ESEm/GPflow can only parallelise starts across threads (it does not fork);
     # GPy is not thread-safe but forks cleanly, so it must use the process
@@ -563,6 +607,38 @@ def run_stage2(cfg, _preprocess_pkls=None):
     )
 
     print(f"Done. Results: {csv_path}")
+
+    # Post-hoc parameter-uncertainty report (inverse-Hessian covariance at the
+    # best-found point) -- same Laplace-approximation report already wired for
+    # the multi-fidelity path; mirrored here so single-fidelity gaussian_gp_variance
+    # runs get it too.
+    if cfg.diagnostics.report_uncertainty:
+        if cfg.optimize.likelihood == "mae":
+            print("  Skipping parameter-uncertainty report: optimize.likelihood='mae' "
+                  "is not a real log-likelihood, so there's nothing statistically "
+                  "meaningful to compute. Set optimize.likelihood: gaussian_gp_variance "
+                  "to enable this report.")
+        else:
+            unc_diag_dir = Path(cfg.diagnostics.output_dir) if cfg.diagnostics.output_dir \
+                           else Path(cfg.paths.output_dir) / "diagnostics"
+            unc_diag_dir.mkdir(parents=True, exist_ok=True)
+            print("=== Stage 2: Parameter uncertainty ===")
+            unc = parameter_uncertainty(
+                cost_fn, x_best=results[top_rows[0], :-1],
+                param_names=param_names, likelihood=cfg.optimize.likelihood,
+                bounds_low=bounds_low, bounds_high=bounds_high,
+            )
+            unc_path = unc_diag_dir / f"parameter_uncertainty_seed{cfg.optimize.seed}.pkl"
+            with open(unc_path, "wb") as f:
+                pickle.dump(unc, f)
+            print(f"  Saved parameter uncertainty → {unc_path}")
+
+            from autotune_gp.diagnostics import plot_parameter_uncertainty
+            plot_parameter_uncertainty(
+                unc["x"], unc["stderr"], unc["param_names"],
+                unc_diag_dir, suffix=f"_seed{cfg.optimize.seed}",
+                at_bound=unc["at_bound"], bounds_low=bounds_low, bounds_high=bounds_high,
+            )
 
     if cfg.diagnostics.enabled:
         from autotune_gp.diagnostics import run_diagnostics
@@ -871,6 +947,16 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                 var_floor=cfg.optimize.var_floor,
                 variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
             )
+        elif cfg.optimize.likelihood == "student_t":
+            base_cost = zrg_cost_function_student_t(
+                m, v, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+                var_floor=cfg.optimize.var_floor,
+                variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
+                dof=cfg.optimize.student_t_dof,
+            )
         else:
             base_cost = zrg_cost_function_mae_weighted(
                 m, obs_norm, var_w, zrg_w, dy_w,
@@ -1046,6 +1132,12 @@ def main():
                         "GPflow joint model) or 'gpy' (independent per-feature "
                         "GPy models — pickles/forks, enables GP save + process "
                         "executor). Overrides runtime.sf_gp_backend.")
+    p.add_argument("--kfold-folds", type=int, default=None, metavar="N",
+                   help="(Single-fidelity only) Evaluate only the first N of the "
+                        "saved k-fold splits instead of all of them. Purely a "
+                        "diagnostic R²/RMSE check -- does not affect the surrogate "
+                        "actually used for optimization -- so this trades fold "
+                        "coverage for wall-clock time on large training sets.")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -1076,7 +1168,7 @@ def main():
                                      skip_optimize=args.skip_optimize,
                                      vary_params=vary_params)
         else:
-            run_stage2(cfg)
+            run_stage2(cfg, max_folds=args.kfold_folds)
     else:
         run_stage1(cfg, preprocess_mode=args.preprocess_mode, make_plots=args.plot)
         if use_mf:
@@ -1086,7 +1178,7 @@ def main():
             run_stage2(cfg, _preprocess_pkls={
                 "obs_pkl":     str(out_dir / "obs.pkl"),
                 "gp_proj_pkl": str(out_dir / "gp_proj.pkl"),
-            })
+            }, max_folds=args.kfold_folds)
 
 
 if __name__ == "__main__":

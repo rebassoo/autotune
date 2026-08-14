@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Dict, List, Optional
+import math
 import numpy as np
 from sklearn.metrics import mean_absolute_error as _mae_sklearn
 from .backend import Backend
@@ -343,6 +344,226 @@ def zrg_cost_function_gaussian_nll(
             zrg_w["regional"] * _w_sq_nll_mean(obs[z_end:r_end], preds[z_end:r_end],
                                                 pred_var[z_end:r_end], regional_weights) +
             zrg_w["global"]   * _w_sq_nll_scalar(obs[g_idx], preds[g_idx], pred_var[g_idx])
+        )
+        total_cost += snap_weight * snap_cost
+
+    return total_cost
+
+
+def zrg_cost_function_student_t(
+    preds,
+    pred_var,
+    obs,
+    var_w: Dict[str, float],
+    zrg_w: Dict[str, float],
+    dy_w: Dict[str, float],
+    n_zonal: int,
+    n_regions: int,
+    backend: Backend,
+    var_names: Optional[List[str]] = None,
+    zonal_weights: Optional[List[float]] = None,
+    regional_weights: Optional[List[float]] = None,
+    var_floor: float = 1e-6,
+    variance_penalty_kappa: float = 0.0,
+    dof: float = 4.0,
+) -> float:
+    """
+    ZRG Student-t negative-log-likelihood cost function, using the GP's own
+    predictive variance as the scale term. Identical aggregation structure to
+    zrg_cost_function_gaussian_nll (block-mean over zonal/regional/global,
+    same var_w/zrg_w/dy_w weighting, same var_floor clipping and optional
+    variance_penalty_kappa), but with a Student-t per-location term instead
+    of a Gaussian one:
+
+        0.5*log(var_clipped)
+        + 0.5*(dof+1)*log(1 + diff**2/(dof*var_clipped))
+        + const(dof) + kappa*var_clipped
+
+    (diff = pred - obs), where
+        const(dof) = -lgamma((dof+1)/2) + lgamma(dof/2) + 0.5*log(dof*pi)
+    is the dof-dependent (but data-independent) Student-t normalizing
+    constant -- included so the returned value is a true NLL, though being
+    additive and residual-independent it does not affect the argmin or the
+    Hessian. As dof -> infinity this term converges exactly to
+    zrg_cost_function_gaussian_nll's `0.5*diff**2/var_clipped +
+    0.5*log(2*pi*var_clipped)` (the standard Student-t -> Gaussian limit);
+    dof is a fixed hyperparameter here (`optimize.student_t_dof`), not fit.
+
+    Motivation: under the Gaussian NLL, the fit term grows quadratically in
+    the residual, so a single hard-to-fit variable/location (e.g. OLR, which
+    the ne128 k-fold put at R^2~0.44 vs ~0.72 for the other three) can
+    dominate the total cost and pull the optimizer toward whatever parameter
+    values shrink that one large residual, including the sampled range's
+    edges. The Student-t's fit term grows only ~logarithmically once
+    diff**2 >> dof*var_clipped, so a single large residual can no longer
+    dominate the sum the way it can under Gaussian-NLL -- this is the
+    mechanism the empirical at-bound comparison (MAE vs Gaussian-NLL
+    boundary-pinning counts, see conversation) motivated trying. var_floor
+    and variance_penalty_kappa play the same roles as in
+    zrg_cost_function_gaussian_nll: the heavier tails alone do not eliminate
+    the variance-inflation exploit (a large diff**2/(dof*var_clipped) can
+    still be shrunk by inflating var_clipped), so kappa remains available as
+    a direct counter to it.
+
+    preds, obs, pred_var: (1, n_feat, n_vars) — pred_var is the GP's
+                          predictive variance at the same points/layout as
+                          preds.
+    var_names:  column-order list of variable names (default: list(var_w.keys()))
+    dy_w:       {snapshot_label: weight} — one entry per snapshot, in feature-block order
+                e.g. {'ANN': 1.0} or {'DJF': 0.5, 'JJA': 0.5}
+
+    Feature layout per snapshot block:
+        [zonal_0 … zonal_{n_zonal-1}, reg_0 … reg_{n_regions-1}, global]
+    Total features = len(dy_w) * (n_zonal + n_regions + 1)
+    """
+    n_obs, n_feat, n_vars = preds.shape
+    if n_obs != 1:
+        raise ValueError(
+            f"Expected n_obs=1, got {n_obs}. The cost function evaluates one "
+            "parameter set against a single observation target."
+        )
+    if pred_var.shape != preds.shape:
+        raise ValueError(
+            f"pred_var has shape {pred_var.shape} but preds has shape {preds.shape}; "
+            "they must match (pred_var is the GP's predictive variance at the "
+            "same points/layout as preds)."
+        )
+    if dof <= 0:
+        raise ValueError(f"dof must be > 0, got {dof!r}")
+
+    n_snaps = len(dy_w)
+    expected = n_snaps * (n_zonal + n_regions + 1)
+    if n_feat != expected:
+        raise ValueError(
+            "ZRG layout mismatch: got n_feat=%d expected %d "
+            "(n_snaps=%d n_zonal=%d n_regions=%d)"
+            % (n_feat, expected, n_snaps, n_zonal, n_regions)
+        )
+
+    if var_names is None:
+        var_names = list(var_w.keys())
+    if len(var_names) != n_vars:
+        raise ValueError(
+            f"var_names has {len(var_names)} entries but preds has {n_vars} variable columns"
+        )
+
+    name_to_col = {name: idx for idx, name in enumerate(var_names)}
+
+    preds    = preds.squeeze()      # (n_feat, n_vars)
+    obs      = obs.squeeze()
+    pred_var = pred_var.squeeze()
+
+    snap_size = n_zonal + n_regions + 1
+
+    # dof-dependent normalizing constant, computed once with plain Python
+    # math (not backend-specific): it's a fixed scalar, independent of any
+    # data the backend would otherwise need to touch.
+    const_dof = (-math.lgamma((dof + 1.0) / 2.0) + math.lgamma(dof / 2.0)
+                 + 0.5 * math.log(dof * math.pi))
+
+    # ------------------------------------------------------------------
+    # Backend-specific Student-t NLL helpers
+    # ------------------------------------------------------------------
+    if backend.name == "numpy":
+        def _t_nll_mean(po, pp, pv, weights=None) -> float:
+            var_c = np.maximum(pv, var_floor)
+            diff2 = (pp - po) ** 2
+            term  = (0.5 * np.log(var_c)
+                     + 0.5 * (dof + 1.0) * np.log1p(diff2 / (dof * var_c))
+                     + const_dof + variance_penalty_kappa * var_c)
+            if weights is not None:
+                w = np.asarray(weights, dtype=float)
+                return float(np.sum(w * term) / np.sum(w))
+            return float(np.mean(term))
+        def _t_nll_scalar(o, p, v) -> float:
+            var_c = max(float(v), var_floor)
+            diff2 = (float(p) - float(o)) ** 2
+            return float(0.5 * np.log(var_c)
+                         + 0.5 * (dof + 1.0) * np.log1p(diff2 / (dof * var_c))
+                         + const_dof + variance_penalty_kappa * var_c)
+
+    elif backend.name == "cupy":
+        cp = backend.xp
+        def _t_nll_mean(po, pp, pv, weights=None) -> float:
+            po, pp, pv = cp.asarray(po), cp.asarray(pp), cp.asarray(pv)
+            var_c = cp.maximum(pv, var_floor)
+            diff2 = (pp - po) ** 2
+            term  = (0.5 * cp.log(var_c)
+                     + 0.5 * (dof + 1.0) * cp.log1p(diff2 / (dof * var_c))
+                     + const_dof + variance_penalty_kappa * var_c)
+            if weights is not None:
+                w = cp.asarray(weights)
+                return float((cp.sum(w * term) / cp.sum(w)).get())
+            return float(cp.mean(term).get())
+        def _t_nll_scalar(o, p, v) -> float:
+            var_c = max(float(v), var_floor)
+            diff2 = (float(p) - float(o)) ** 2
+            return float(0.5 * float(cp.log(var_c))
+                         + 0.5 * (dof + 1.0) * float(cp.log1p(diff2 / (dof * var_c)))
+                         + const_dof + variance_penalty_kappa * var_c)
+
+    elif backend.name == "torch":
+        torch = backend.xp
+        dev   = backend.torch_device
+        def _t_nll_mean(po, pp, pv, weights=None) -> float:
+            po = torch.as_tensor(po, device=dev)
+            pp = torch.as_tensor(pp, device=dev)
+            pv = torch.as_tensor(pv, device=dev)
+            var_c = torch.clamp(pv, min=var_floor)
+            diff2 = (pp - po) ** 2
+            term  = (0.5 * torch.log(var_c)
+                     + 0.5 * (dof + 1.0) * torch.log1p(diff2 / (dof * var_c))
+                     + const_dof + variance_penalty_kappa * var_c)
+            if weights is not None:
+                w = torch.as_tensor(weights, dtype=term.dtype, device=dev)
+                return float((torch.sum(w * term) / torch.sum(w)).detach().cpu().item())
+            return float(term.mean().detach().cpu().item())
+        def _t_nll_scalar(o, p, v) -> float:
+            var_c = max(float(v), var_floor)
+            diff2 = (float(p) - float(o)) ** 2
+            return float(0.5 * math.log(var_c)
+                         + 0.5 * (dof + 1.0) * math.log1p(diff2 / (dof * var_c))
+                         + const_dof + variance_penalty_kappa * var_c)
+
+    else:
+        raise ValueError(f"Unsupported backend: {backend.name!r}")
+
+    # ------------------------------------------------------------------
+    # Generic weighted-mean-NLL helpers (backend-agnostic)
+    # ------------------------------------------------------------------
+    def _w_t_nll_mean(slice_obs, slice_pred, slice_var, weights=None) -> float:
+        return float(np.sum([
+            var_w[vn] * _t_nll_mean(slice_obs[:, name_to_col[vn]],
+                                     slice_pred[:, name_to_col[vn]],
+                                     slice_var[:, name_to_col[vn]],
+                                     weights)
+            for vn in var_w
+        ]))
+
+    def _w_t_nll_scalar(row_obs, row_pred, row_var) -> float:
+        return float(np.sum([
+            var_w[vn] * _t_nll_scalar(row_obs[name_to_col[vn]],
+                                       row_pred[name_to_col[vn]],
+                                       row_var[name_to_col[vn]])
+            for vn in var_w
+        ]))
+
+    # ------------------------------------------------------------------
+    # Accumulate cost over all snapshot blocks
+    # ------------------------------------------------------------------
+    total_cost = 0.0
+    for snap_idx, (_, snap_weight) in enumerate(dy_w.items()):
+        off   = snap_idx * snap_size
+        z_end = off + n_zonal
+        r_end = z_end + n_regions
+        g_idx = off + snap_size - 1
+
+        snap_cost = (
+            zrg_w["zonal"]    * _w_t_nll_mean(obs[off:z_end],  preds[off:z_end],
+                                               pred_var[off:z_end], zonal_weights) +
+            zrg_w["regional"] * _w_t_nll_mean(obs[z_end:r_end], preds[z_end:r_end],
+                                               pred_var[z_end:r_end], regional_weights) +
+            zrg_w["global"]   * _w_t_nll_scalar(obs[g_idx], preds[g_idx], pred_var[g_idx])
         )
         total_cost += snap_weight * snap_cost
 

@@ -94,27 +94,36 @@ class OptimizeCfg:
     # ESEm/GPflow, and TensorFlow does not survive fork.
     executor: str = "thread"
     # Cost function used by the optimizer: 'mae' (default, unchanged historical
-    # behaviour) or 'gaussian_gp_variance' — a Gaussian negative-log-likelihood
+    # behaviour), 'gaussian_gp_variance' — a Gaussian negative-log-likelihood
     # that uses the GP's own predictive variance as the noise term (see
-    # autotune_gp.cost.zrg_cost_function_gaussian_nll). Only 'gaussian_gp_variance'
-    # makes the post-hoc parameter-uncertainty report (diagnostics.report_uncertainty)
-    # statistically meaningful.
+    # autotune_gp.cost.zrg_cost_function_gaussian_nll) — or 'student_t' — same
+    # idea but with a Student-t per-location term (see
+    # autotune_gp.cost.zrg_cost_function_student_t), whose heavier tails keep
+    # a single hard-to-fit variable/location from dominating the total cost
+    # the way a squared-error term can. Only 'gaussian_gp_variance' or
+    # 'student_t' make the post-hoc parameter-uncertainty report
+    # (diagnostics.report_uncertainty) statistically meaningful.
     likelihood: str = "mae"
     # Floor applied to the GP's predictive variance before dividing by it in the
-    # 'gaussian_gp_variance' likelihood, to guard against blow-up where the GP is
-    # (near-)certain. Ignored when likelihood='mae'.
+    # 'gaussian_gp_variance'/'student_t' likelihoods, to guard against blow-up
+    # where the GP is (near-)certain. Ignored when likelihood='mae'.
     var_floor: float = 1e-6
-    # Extra +kappa*pred_var term added to the 'gaussian_gp_variance' likelihood
-    # (see autotune_gp.cost.zrg_cost_function_gaussian_nll). Without it, the
-    # optimizer can lower cost by moving to a higher-variance point (shrinking
-    # the residual/var term faster than the log(var) term grows), rather than
-    # to a genuinely better-fitting one -- corners of the sampled envelope are
-    # exactly where GP variance tends to be largest, so this can pull the
-    # optimum toward parameter combinations the surrogate has little training
-    # data for. kappa > 0 makes higher variance strictly costlier, closing that
-    # loophole. Default 0.0 = off, recovers the original cost exactly. Ignored
-    # when likelihood='mae'.
+    # Extra +kappa*pred_var term added to the 'gaussian_gp_variance'/'student_t'
+    # likelihoods (see autotune_gp.cost.zrg_cost_function_gaussian_nll /
+    # zrg_cost_function_student_t). Without it, the optimizer can lower cost by
+    # moving to a higher-variance point (shrinking the residual/var term faster
+    # than the log(var) term grows), rather than to a genuinely better-fitting
+    # one -- corners of the sampled envelope are exactly where GP variance
+    # tends to be largest, so this can pull the optimum toward parameter
+    # combinations the surrogate has little training data for. kappa > 0 makes
+    # higher variance strictly costlier, closing that loophole. Default 0.0 =
+    # off, recovers the original cost exactly. Ignored when likelihood='mae'.
     variance_penalty_kappa: float = 0.0
+    # Degrees of freedom for the 'student_t' likelihood (see
+    # autotune_gp.cost.zrg_cost_function_student_t). Smaller = heavier tails =
+    # more MAE-like robustness to a single large residual; as dof -> infinity
+    # this recovers 'gaussian_gp_variance' exactly. Ignored otherwise.
+    student_t_dof: float = 4.0
     # Extra penalty (see autotune_gp.cost.training_distance_penalty) added
     # regardless of likelihood, based on distance (in each parameter's own
     # bounds_from_data-rescaled space) from the candidate point to the
@@ -208,6 +217,7 @@ def load_config(path: str | Path) -> Config:
         var_floor=float(opt.get("var_floor", 1e-6)),
         variance_penalty_kappa=float(opt.get("variance_penalty_kappa", 0.0)),
         training_distance_penalty_lambda=float(opt.get("training_distance_penalty_lambda", 0.0)),
+        student_t_dof=float(opt.get("student_t_dof", 4.0)),
     )
 
     rt = raw.get("runtime", {})
