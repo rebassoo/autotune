@@ -55,7 +55,7 @@ from autotune_gp.transforms import fit_transform_X, fit_transform_Y, transform_o
 from autotune_gp.gp import GPWrapper
 from autotune_gp.cost import (
     zrg_cost_function_mae_weighted, zrg_cost_function_gaussian_nll,
-    zrg_cost_function_student_t,
+    zrg_cost_function_student_t, zrg_cost_function_laplace,
     build_training_coverage_tree, training_distance_penalty,
 )
 from autotune_gp.optimize import optimize_parallel
@@ -557,6 +557,15 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
                 variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
                 dof=cfg.optimize.student_t_dof,
             )
+        elif cfg.optimize.likelihood == "laplace_gp_variance":
+            base_cost = zrg_cost_function_laplace(
+                m, v, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+                var_floor=cfg.optimize.var_floor,
+                variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
+            )
         else:
             base_cost = zrg_cost_function_mae_weighted(
                 m, obs_norm, var_w, zrg_w, dy_w,
@@ -956,6 +965,15 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                 var_floor=cfg.optimize.var_floor,
                 variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
                 dof=cfg.optimize.student_t_dof,
+            )
+        elif cfg.optimize.likelihood == "laplace_gp_variance":
+            base_cost = zrg_cost_function_laplace(
+                m, v, obs_norm, var_w, zrg_w, dy_w,
+                n_zonal=n_zonal, n_regions=n_regions, backend=backend,
+                var_names=list(var_names),
+                zonal_weights=zonal_weights, regional_weights=regional_weights,
+                var_floor=cfg.optimize.var_floor,
+                variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
             )
         else:
             base_cost = zrg_cost_function_mae_weighted(

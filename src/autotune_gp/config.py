@@ -94,19 +94,30 @@ class OptimizeCfg:
     # ESEm/GPflow, and TensorFlow does not survive fork.
     executor: str = "thread"
     # Cost function used by the optimizer: 'mae' (default, unchanged historical
-    # behaviour), 'gaussian_gp_variance' — a Gaussian negative-log-likelihood
-    # that uses the GP's own predictive variance as the noise term (see
-    # autotune_gp.cost.zrg_cost_function_gaussian_nll) — or 'student_t' — same
+    # behaviour, NOT a real likelihood -- no log(v_c)/normalization term, never
+    # touches the GP's predictive variance at all), 'gaussian_gp_variance' — a
+    # Gaussian negative-log-likelihood that uses the GP's own predictive
+    # variance as the noise term (see
+    # autotune_gp.cost.zrg_cost_function_gaussian_nll) — 'student_t' — same
     # idea but with a Student-t per-location term (see
     # autotune_gp.cost.zrg_cost_function_student_t), whose heavier tails keep
     # a single hard-to-fit variable/location from dominating the total cost
-    # the way a squared-error term can. Only 'gaussian_gp_variance' or
-    # 'student_t' make the post-hoc parameter-uncertainty report
-    # (diagnostics.report_uncertainty) statistically meaningful.
+    # the way a squared-error term can — or 'laplace_gp_variance' — the
+    # likelihood-based (heteroscedasticity-aware) counterpart to plain 'mae':
+    # L1 residual growth like 'mae', but scaled by the GP's own v_c and a
+    # proper normalizing term, same as 'gaussian_gp_variance'/'student_t' (see
+    # autotune_gp.cost.zrg_cost_function_laplace). Only 'gaussian_gp_variance',
+    # 'student_t', or 'laplace_gp_variance' make the post-hoc
+    # parameter-uncertainty report (diagnostics.report_uncertainty)
+    # statistically meaningful -- and even then, 'laplace_gp_variance' can
+    # return NaN/unstable stderr for individual parameters whose main
+    # influence is on a location where the residual sits very close to zero
+    # at the optimum (the |r| kink at r=0), unlike the other two.
     likelihood: str = "mae"
     # Floor applied to the GP's predictive variance before dividing by it in the
-    # 'gaussian_gp_variance'/'student_t' likelihoods, to guard against blow-up
-    # where the GP is (near-)certain. Ignored when likelihood='mae'.
+    # 'gaussian_gp_variance'/'student_t'/'laplace_gp_variance' likelihoods, to
+    # guard against blow-up where the GP is (near-)certain. Ignored when
+    # likelihood='mae'.
     var_floor: float = 1e-6
     # Extra +kappa*pred_var term added to the 'gaussian_gp_variance'/'student_t'
     # likelihoods (see autotune_gp.cost.zrg_cost_function_gaussian_nll /

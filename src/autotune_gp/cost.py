@@ -350,6 +350,195 @@ def zrg_cost_function_gaussian_nll(
     return total_cost
 
 
+def zrg_cost_function_laplace(
+    preds,
+    pred_var,
+    obs,
+    var_w: Dict[str, float],
+    zrg_w: Dict[str, float],
+    dy_w: Dict[str, float],
+    n_zonal: int,
+    n_regions: int,
+    backend: Backend,
+    var_names: Optional[List[str]] = None,
+    zonal_weights: Optional[List[float]] = None,
+    regional_weights: Optional[List[float]] = None,
+    var_floor: float = 1e-6,
+    variance_penalty_kappa: float = 0.0,
+) -> float:
+    """
+    ZRG Laplace negative-log-likelihood cost function, using the GP's own
+    predictive variance as the scale term -- the likelihood-based counterpart
+    to `zrg_cost_function_mae_weighted`'s raw (unscaled, un-normalized) MAE.
+
+    -log Laplace(r; 0, b) = |r|/b + log(2b). Matching b so the Laplace's own
+    variance (2*b^2) equals var_clipped (the same convention
+    zrg_cost_function_gaussian_nll uses -- var_clipped *is* the modeled
+    variance there) gives b = sqrt(var_clipped/2), which simplifies to:
+
+        l(r,v) = sqrt(2)*|r|/sqrt(var_clipped) + 0.5*log(2*var_clipped)
+                 + kappa*var_clipped
+
+    `var_clipped = max(pred_var, var_floor)`, same role and same guard as in
+    zrg_cost_function_gaussian_nll. `variance_penalty_kappa` is the same
+    optional pessimistic variance penalty documented there (0.0 = off,
+    recovers the plain Laplace NLL).
+
+    Unlike zrg_cost_function_mae_weighted, this *is* a proper negative
+    log-likelihood (includes the log(2*var_clipped) normalizing term, so it
+    integrates to 1 as a density) -- it is heteroscedasticity-aware (weights
+    each location by the GP's own confidence there), the same property
+    zrg_cost_function_student_t has, but with L1 (absolute-error) rather than
+    L2 (squared-error) growth in the residual, and lighter tails than
+    Student-t's power-law tails.
+
+    Caution: |r| is not differentiable at r=0. This does not meaningfully
+    affect the L-BFGS-B optimization itself (subgradients still work, and
+    plain zrg_cost_function_mae_weighted already demonstrates this in
+    practice) but it does mean the post-hoc parameter-uncertainty report's
+    finite-difference Hessian (see autotune_gp.uncertainty) can be unreliable
+    for any parameter whose main influence is on a location where the
+    residual sits very close to zero at the optimum -- expect NaN or wildly
+    unstable stderr for those specific parameters, not necessarily all of
+    them.
+
+    Aggregation, argument shapes, and the ZRG feature layout are identical to
+    zrg_cost_function_gaussian_nll -- see that function's docstring.
+    """
+    n_obs, n_feat, n_vars = preds.shape
+    if n_obs != 1:
+        raise ValueError(
+            f"Expected n_obs=1, got {n_obs}. The cost function evaluates one "
+            "parameter set against a single observation target."
+        )
+    if pred_var.shape != preds.shape:
+        raise ValueError(
+            f"pred_var has shape {pred_var.shape} but preds has shape {preds.shape}; "
+            "they must match (pred_var is the GP's predictive variance at the "
+            "same points/layout as preds)."
+        )
+
+    n_snaps = len(dy_w)
+    expected = n_snaps * (n_zonal + n_regions + 1)
+    if n_feat != expected:
+        raise ValueError(
+            "ZRG layout mismatch: got n_feat=%d expected %d "
+            "(n_snaps=%d n_zonal=%d n_regions=%d)"
+            % (n_feat, expected, n_snaps, n_zonal, n_regions)
+        )
+
+    if var_names is None:
+        var_names = list(var_w.keys())
+    if len(var_names) != n_vars:
+        raise ValueError(
+            f"var_names has {len(var_names)} entries but preds has {n_vars} variable columns"
+        )
+
+    name_to_col = {name: idx for idx, name in enumerate(var_names)}
+
+    preds    = preds.squeeze()      # (n_feat, n_vars)
+    obs      = obs.squeeze()
+    pred_var = pred_var.squeeze()
+
+    snap_size = n_zonal + n_regions + 1
+
+    # ------------------------------------------------------------------
+    # Backend-specific Laplace-NLL helpers
+    # ------------------------------------------------------------------
+    if backend.name == "numpy":
+        def _lap_nll_mean(po, pp, pv, weights=None) -> float:
+            var_c = np.maximum(pv, var_floor)
+            term  = (np.sqrt(2.0) * np.abs(pp - po) / np.sqrt(var_c)
+                     + 0.5 * np.log(2 * var_c) + variance_penalty_kappa * var_c)
+            if weights is not None:
+                w = np.asarray(weights, dtype=float)
+                return float(np.sum(w * term) / np.sum(w))
+            return float(np.mean(term))
+        def _lap_nll_scalar(o, p, v) -> float:
+            var_c = max(float(v), var_floor)
+            return float(np.sqrt(2.0) * abs(p - o) / np.sqrt(var_c)
+                         + 0.5 * np.log(2 * var_c) + variance_penalty_kappa * var_c)
+
+    elif backend.name == "cupy":
+        cp = backend.xp
+        def _lap_nll_mean(po, pp, pv, weights=None) -> float:
+            po, pp, pv = cp.asarray(po), cp.asarray(pp), cp.asarray(pv)
+            var_c = cp.maximum(pv, var_floor)
+            term  = (cp.sqrt(2.0) * cp.abs(pp - po) / cp.sqrt(var_c)
+                     + 0.5 * cp.log(2 * var_c) + variance_penalty_kappa * var_c)
+            if weights is not None:
+                w = cp.asarray(weights)
+                return float((cp.sum(w * term) / cp.sum(w)).get())
+            return float(cp.mean(term).get())
+        def _lap_nll_scalar(o, p, v) -> float:
+            var_c = max(float(v), var_floor)
+            return float(math.sqrt(2.0) * abs(float(p) - float(o)) / math.sqrt(var_c)
+                         + 0.5 * math.log(2 * var_c) + variance_penalty_kappa * var_c)
+
+    elif backend.name == "torch":
+        torch = backend.xp
+        dev   = backend.torch_device
+        def _lap_nll_mean(po, pp, pv, weights=None) -> float:
+            po = torch.as_tensor(po, device=dev)
+            pp = torch.as_tensor(pp, device=dev)
+            pv = torch.as_tensor(pv, device=dev)
+            var_c = torch.clamp(pv, min=var_floor)
+            term  = (math.sqrt(2.0) * torch.abs(pp - po) / torch.sqrt(var_c)
+                     + 0.5 * torch.log(2 * var_c) + variance_penalty_kappa * var_c)
+            if weights is not None:
+                w = torch.as_tensor(weights, dtype=term.dtype, device=dev)
+                return float((torch.sum(w * term) / torch.sum(w)).detach().cpu().item())
+            return float(term.mean().detach().cpu().item())
+        def _lap_nll_scalar(o, p, v) -> float:
+            var_c = max(float(v), var_floor)
+            return float(math.sqrt(2.0) * abs(float(p) - float(o)) / math.sqrt(var_c)
+                         + 0.5 * math.log(2 * var_c) + variance_penalty_kappa * var_c)
+
+    else:
+        raise ValueError(f"Unsupported backend: {backend.name!r}")
+
+    # ------------------------------------------------------------------
+    # Generic weighted-mean-NLL helpers (backend-agnostic)
+    # ------------------------------------------------------------------
+    def _w_lap_nll_mean(slice_obs, slice_pred, slice_var, weights=None) -> float:
+        return float(np.sum([
+            var_w[vn] * _lap_nll_mean(slice_obs[:, name_to_col[vn]],
+                                       slice_pred[:, name_to_col[vn]],
+                                       slice_var[:, name_to_col[vn]],
+                                       weights)
+            for vn in var_w
+        ]))
+
+    def _w_lap_nll_scalar(row_obs, row_pred, row_var) -> float:
+        return float(np.sum([
+            var_w[vn] * _lap_nll_scalar(row_obs[name_to_col[vn]],
+                                         row_pred[name_to_col[vn]],
+                                         row_var[name_to_col[vn]])
+            for vn in var_w
+        ]))
+
+    # ------------------------------------------------------------------
+    # Accumulate cost over all snapshot blocks
+    # ------------------------------------------------------------------
+    total_cost = 0.0
+    for snap_idx, (_, snap_weight) in enumerate(dy_w.items()):
+        off   = snap_idx * snap_size
+        z_end = off + n_zonal
+        r_end = z_end + n_regions
+        g_idx = off + snap_size - 1
+
+        snap_cost = (
+            zrg_w["zonal"]    * _w_lap_nll_mean(obs[off:z_end],  preds[off:z_end],
+                                                 pred_var[off:z_end], zonal_weights) +
+            zrg_w["regional"] * _w_lap_nll_mean(obs[z_end:r_end], preds[z_end:r_end],
+                                                 pred_var[z_end:r_end], regional_weights) +
+            zrg_w["global"]   * _w_lap_nll_scalar(obs[g_idx], preds[g_idx], pred_var[g_idx])
+        )
+        total_cost += snap_weight * snap_cost
+
+    return total_cost
+
+
 def zrg_cost_function_student_t(
     preds,
     pred_var,

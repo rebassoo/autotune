@@ -42,8 +42,17 @@ def _blas_ctx(limit):
 
 
 def _run_one_start(args):
-    """Run one basinhopping start. Module-level so it pickles by name only."""
+    """Run one start. Module-level so it pickles by name only.
+
+    method='MIGRAD' dispatches to iminuit's Minuit/MIGRAD instead of
+    scipy's basinhopping(L-BFGS-B). MIGRAD has no basin-hopping analogue
+    (no perturb/accept loop), so `niter` is ignored on this path -- the
+    many independent random starts already provide the global-search
+    diversity basinhopping's single niter=1 hop was only lightly adding.
+    """
     idx, x0, start_seed = args
+    if _WORKER["minimizer_kwargs"].get("method") == "MIGRAD":
+        return idx, _run_one_start_migrad(x0, _WORKER["minimizer_kwargs"]["bounds"])
     with _blas_ctx(_WORKER.get("blas_limit")):
         res = basinhopping(
             _WORKER["cost_fn"], x0,
@@ -52,6 +61,25 @@ def _run_one_start(args):
             seed=int(start_seed),
         )
     return idx, np.hstack((res.x, res.fun))
+
+
+def _run_one_start_migrad(x0, bounds):
+    """One MIGRAD minimization from x0, box-constrained by `bounds`.
+
+    errordef=Minuit.LIKELIHOOD (0.5): cost_fn returns a genuine NLL (or a
+    plain-MAE cost, for which errordef is moot -- MIGRAD only uses it to
+    scale HESSE/MINOS uncertainties, never to find the minimum itself), so
+    this is the convention that makes a future HESSE/MINOS call return
+    correctly-scaled covariances/intervals. Using LEAST_SQUARES (1.0)
+    instead would silently halve the reported variances.
+    """
+    from iminuit import Minuit
+    with _blas_ctx(_WORKER.get("blas_limit")):
+        m = Minuit(_WORKER["cost_fn"], x0)
+        m.limits = bounds
+        m.errordef = Minuit.LIKELIHOOD
+        m.migrad()
+    return np.hstack((np.array(m.values), m.fval))
 
 
 def _make_executor(kind: str, max_workers):
