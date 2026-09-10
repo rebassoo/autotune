@@ -183,34 +183,50 @@ def main():
           f"({n_params} params x 2 directions) across {args.max_workers} workers ...",
           flush=True)
 
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def checkpoint(results):
+        payload = dict(param_names=param_names, x_best=x_best, cost_best=cost_best,
+                        bounds_low=bounds_low, bounds_high=bounds_high,
+                        delta=args.delta, results=results,
+                        n_done=sum(len(v) for v in results.values()), n_total=len(tasks))
+        tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump(payload, f)
+        tmp.replace(out_path)
+
     t0 = time.time()
     results = {}
+    from concurrent.futures import as_completed
     with ProcessPoolExecutor(max_workers=args.max_workers,
                               mp_context=mp.get_context("fork")) as ex:
-        for out in ex.map(_profile_task, tasks):
+        futures = {ex.submit(_profile_task, task): task for task in tasks}
+        for fut in as_completed(futures):
+            out = fut.result()
             pi, d = out["param_idx"], out["direction"]
             results.setdefault(pi, {})[d] = out
             tag = "EDGE" if out["hit_edge"] else "cross"
+            n_done = sum(len(v) for v in results.values())
             print(f"  [{param_names[pi]:<38s} dir={'+' if d>0 else '-'}] "
                   f"bound={out['bound_val']:.4f} ({tag}, {out['n_reopt']} reopts) "
-                  f"[{time.time()-t0:.0f}s elapsed]", flush=True)
+                  f"[{time.time()-t0:.0f}s elapsed] ({n_done}/{len(tasks)} done)", flush=True)
+            # Checkpoint after every completed task so a walltime kill loses at
+            # most the in-flight tasks, not everything computed so far.
+            checkpoint(results)
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(param_names=param_names, x_best=x_best, cost_best=cost_best,
-                    bounds_low=bounds_low, bounds_high=bounds_high,
-                    delta=args.delta, results=results)
-    with open(out_path, "wb") as f:
-        pickle.dump(payload, f)
     print(f"\nSaved {out_path}")
 
     print(f"\n{'Parameter':<38s} {'value':>8s} {'lo68':>8s} {'hi68':>8s} "
           f"{'lo_edge':>8s} {'hi_edge':>8s}")
     for pi, name in enumerate(param_names):
-        lo = results[pi][-1]
-        hi = results[pi][+1]
-        print(f"{name:<38s} {x_best[pi]:8.4f} {lo['bound_val']:8.4f} {hi['bound_val']:8.4f} "
-              f"{'yes' if lo['hit_edge'] else 'no':>8s} {'yes' if hi['hit_edge'] else 'no':>8s}")
+        lo = results.get(pi, {}).get(-1)
+        hi = results.get(pi, {}).get(+1)
+        lo_s = f"{lo['bound_val']:8.4f}" if lo else "  PEND. "
+        hi_s = f"{hi['bound_val']:8.4f}" if hi else "  PEND. "
+        lo_e = ('yes' if lo['hit_edge'] else 'no') if lo else "  -"
+        hi_e = ('yes' if hi['hit_edge'] else 'no') if hi else "  -"
+        print(f"{name:<38s} {x_best[pi]:8.4f} {lo_s} {hi_s} {lo_e:>8s} {hi_e:>8s}")
 
 
 if __name__ == "__main__":
