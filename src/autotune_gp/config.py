@@ -246,6 +246,7 @@ def load_config(path: str | Path) -> Config:
         max_workers=opt.get("max_workers", None),
         param_ordering_constraints=opt.get("param_ordering_constraints", None),
         param_physical_bounds=opt.get("param_physical_bounds", None),
+        log_params=opt.get("log_params", None),
         bounds_from_data=bool(opt.get("bounds_from_data", False)),
         executor=str(opt.get("executor", "thread")).lower(),
         likelihood=str(opt.get("likelihood", "mae")).lower(),
