@@ -1,0 +1,181 @@
+# COLD-FIT CONTROL for the 3-level ne32 -> ne128 -> ne256 surrogate, Student-t dof=4.
+# Identical to perlmutter_mf3_ne256_studentt_dof4_annual.yaml except that NO warm
+# start is used: all 47 hyperparameters per model are fitted from scratch, so the
+# ne256 data can also move the ne32/ne128 blocks. Same seed, starts, likelihood,
+# weights, bounds and scalers as the warm run, so any difference is the fit alone.
+#
+paths:
+  obs_pkl: null
+  gp_proj_pkl: null
+  output_dir: /pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_studentt_dof4_COLD
+  preprocess_dir: /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/preprocess_output_ne256_all
+
+multi_fidelity:
+  # lowest first; the top level is paths.preprocess_dir
+  fidelity_dirs:
+    - /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/preprocess_output_ne32_prod_v2
+    - /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/preprocess_output_ne128_prod_v2
+  scalers_dir: /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/preprocess_output_ne128_prod_v2
+  warm_start_gp: null      # cold: nothing copied in
+  freeze_lower: false     # all 47 hyperparameters free
+  top_kernel: ard       # 71 top members >= 3*19=57, so 'auto' now picks ARD anyway.
+                        # Pinned explicitly because the 5-fold holdout trains on
+                        # 56-57 members, straddling the threshold -- pinning keeps
+                        # every fold on the same kernel as the production fit.
+
+data:
+  n_zonal: 18
+  regions_list:
+    - poles
+    - extratropical_land
+    - extratropical_ocean
+    - tropical_land
+    - ascending_tropical_ocean
+    - descending_tropical_ocean
+  variables: [PCP, OSR, OLR, TLWP]
+
+weights:
+  variables:
+    PCP: 0.3
+    OSR: 0.1   # reduced from 0.25 per request — reduces OSR's contribution to the cost
+    OLR: 0.3
+    TLWP: 0.3
+  zrg:
+    zonal: 0.3333333333
+    regional: 0.3333333333
+    global: 0.3333333333
+  dy:
+    ANN: 1.0
+  zonal_weights: null
+  regional_weights: null
+
+optimize:
+  seed: 50
+  n_xstarts: 5
+  niter: 1
+  method: L-BFGS-B
+  bounds:
+    low: 0.0
+    high: 1.0
+  n_params: 19
+  # Restrict the search to the range the PPE actually sampled; the declared
+  # param_physical_bounds are much wider than the design for several params.
+  bounds_from_data: true
+  # GPy is not thread-safe (kernel slice state lives on the shared model
+  # object), so starts are parallelised across forked processes instead.
+  # The GP is ~7.7 GB resident; 32 workers is ~245 GB worst case if
+  # copy-on-write shares nothing, against 512 GB/node.
+  executor: process
+  max_workers: 32
+  # Student-t NLL using the GP's own predictive variance as the scale term --
+  # see autotune_gp.cost.zrg_cost_function_student_t. The fit term grows only
+  # ~logarithmically once diff**2 >> dof*var_clipped, so a single hard-to-fit
+  # variable/location (OLR is the usual offender at ne128) cannot dominate the
+  # total the way a squared-error term can. dof=4 is the standard robust-
+  # regression default: heavy enough to matter, still unimodal and
+  # finite-variance, well-behaved for L-BFGS-B. As dof -> infinity this
+  # recovers gaussian_gp_variance exactly.
+  likelihood: student_t
+  var_floor: 1.0e-6
+  student_t_dof: 4.0
+  # Explicit kappa=0 / lambda=0, matching the laplace_gp_variance run this is
+  # meant to be compared against directly.
+  variance_penalty_kappa: 0.0
+  training_distance_penalty_lambda: 0.0
+  param_ordering_constraints:
+    - [lambda_low, lambda_high]
+  # Sampled log-uniformly in the design (verified against the design marginals
+  # with a KS test: p=1.0 uniform in log space, 0.0 in linear; the other 13
+  # parameters are the reverse). Scaled in log space so the training inputs are
+  # uniform in the GP's input space -- a single ARD lengthscale cannot otherwise
+  # cover both the dense low end and the sparse high end.
+  log_params:
+    - c_diag_3rd_mom
+    - coeff_kh
+    - coeff_km
+    - accretion_prefactor
+    - max_total_ni
+    - autoconversion_prefactor
+  param_physical_bounds:
+    thl2tune:                              [0.1, 10]
+    qw2tune:                               [0.1, 10]
+    length_fac:                            [0.1, 10]
+    c_diag_3rd_mom:                        [0.01, 10]
+    coeff_kh:                              [0.01, 1]
+    coeff_km:                              [0.01, 1]
+    lambda_low:                            [0.0001, 0.1]
+    lambda_high:                           [0.0001, 0.1]
+    spa_ccn_to_nc_factor:                  [100, 5000]
+    cldliq_to_ice_collection_factor:       [0.1, 1]
+    rain_to_ice_collection_factor:         [0.1, 1]
+    accretion_prefactor:                   [0.01, 100]
+    deposition_nucleation_exponent:        [0.2, 0.304]
+    max_total_ni:                          [500000, 10000000]
+    ice_sedimentation_factor:              [0.1, 2]
+    rain_selfcollection_breakup_diameter:  [0, 0.0005]
+    autoconversion_prefactor:              [10, 20000]
+    autoconversion_qc_exponent:            [2, 4]
+    autoconversion_radius:                 [2.0e-05, 5.0e-05]
+
+runtime:
+  train_gp: false
+  backend: numpy
+  device: cpu
+  tf_determinism: false
+
+diagnostics:
+  enabled: true
+  output_dir: null
+  # Post-hoc parameter-uncertainty report (inverse-Hessian covariance at the
+  # best-found point). Better behaved here than under laplace_gp_variance:
+  # the Student-t term is smooth in the residual, so it has none of the |r|
+  # kink that makes Laplace stderr unstable near a zero residual.
+  report_uncertainty: true
+
+# ---- Preprocessing inputs ----
+# HF (ne128) and LF (ne32) data are preprocessed separately using their own
+# configs before running MF stage 2.  This section is only needed if you want
+# to regenerate obs.pkl (--stage 1 --preprocess-mode obs); preprocess_dir
+# above already contains all pkl files from the ne128 preprocessing.
+preprocess:
+  params_json: /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/normranked_ne128_prod_v2.json
+  control_file: /pscratch/sd/b/beydoun/e3sm_scratch/pm-gpu/ne32_ppe_prod_v2/PPEensemble_1node_full1024.ne32pg2_ne32pg2.F2010-SCREAMv1.20260608.m000/run/1ma_ne32pg2.AVERAGE.nmonths_x1.2019-08-01-00000.nc
+  regions_file: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/1ma_ne32pg2.AVERAGE.201909_202009.mean.omega500_masks.nc
+
+  drop_zonal_bands: [-85, -75, 85]
+
+  snapshots:
+    - label: ANN
+      weight: 1.0
+      sim_dir: null
+      obs_dir: null
+      nc_glob: null
+      min_files: 1
+
+  variables:
+    PCP:
+      sim_field: precip_total_surf_mass_flux
+      sim_components: [precip_liq_surf_mass_flux, precip_ice_surf_mass_flux]
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/PRECT_IMERG_ne32pg2_201908_202007.nc
+      obs_nc_var: PRECT
+      obs_scale: 1.0
+    OSR:
+      sim_field: SW_flux_up_at_model_top
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
+      obs_nc_var: toa_sw_all_mon
+      obs_scale: 1.0
+    OLR:
+      sim_field: LW_flux_up_at_model_top
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
+      obs_nc_var: toa_lw_all_mon
+      obs_scale: 1.0
+    TLWP:
+      sim_field: LiqWaterPath
+      sim_components: [LiqWaterPath, RainWaterPath]
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/TLWP_MACLWP_ne32pg2_201908_202007.nc
+      obs_nc_var: totallwp
+      obs_scale: 0.001   # g/m² → kg/m²

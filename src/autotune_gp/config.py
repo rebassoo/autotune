@@ -81,6 +81,12 @@ class OptimizeCfg:
     max_workers: Optional[int] = None
     param_ordering_constraints: Optional[List[List[str]]] = None  # [[low_param, high_param], ...]
     param_physical_bounds: Optional[Dict[str, List[float]]] = None  # {param_name: [low, high]}
+    # Parameters sampled log-uniformly in the design, scaled in log space
+    # rather than linearly so the training inputs are uniform in the GP's
+    # input space (see autotune_gp.transforms.LogMinMaxScaler). Names must
+    # appear in param_physical_bounds and have strictly positive bounds.
+    # Empty/None reproduces the previous all-linear behaviour exactly.
+    log_params: Optional[List[str]] = None
     # When true, per-parameter optimizer bounds are narrowed to the range the
     # PPE actually sampled (intersected with `bounds`), instead of searching the
     # full declared param_physical_bounds. Several params are sampled over only
@@ -179,8 +185,26 @@ class MultiFidelityCfg:
     (paths.preprocess_dir).  Stage 1 and the single-fidelity path are
     completely unaffected.
     """
-    low_fidelity_dir: str
+    # Two-level path. Optional when fidelity_dirs is given instead.
+    low_fidelity_dir: str = ""
     method: str = "AR1"
+    # Optional 3+ level chain. Preprocess dirs of every level BELOW the top,
+    # lowest first; the top level stays paths.preprocess_dir. When set (with
+    # >= 2 entries) stage 2 builds an NFidelityGPWrapper instead of the
+    # two-level AR1 model. low_fidelity_dir is then ignored.
+    fidelity_dirs: Optional[List[str]] = None
+    # Whose scalers.pkl normalises X and Y. Must be the level the warm-start
+    # model was fitted in, and must not be a top level with too few members to
+    # estimate scalers. Defaults to paths.preprocess_dir.
+    scalers_dir: Optional[str] = None
+    # Trained two-level mf_gp_trained.pkl used to initialise the two lowest
+    # levels; strongly recommended when the top level has few members.
+    warm_start_gp: Optional[str] = None
+    # Hold the warm-started lower-level hyperparameters fixed.
+    freeze_lower: bool = True
+    # Discrepancy kernel for the TOP level: 'auto' uses one shared lengthscale
+    # below 3*n_params members, per-parameter (ARD) above.
+    top_kernel: str = "auto"
 
 @dataclass
 class Config:

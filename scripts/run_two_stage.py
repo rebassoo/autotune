@@ -78,6 +78,21 @@ from preprocessing.pipeline import (
 )
 
 
+def _log_mask_for(cfg, columns):
+    """Boolean mask over `columns` marking cfg.optimize.log_params for log scaling.
+
+    Raises on a name that is not an actual parameter, so a typo in the config
+    silently reverting that parameter to linear scaling is not possible.
+    """
+    names = [str(c) for c in columns]
+    want = list(getattr(cfg.optimize, "log_params", None) or [])
+    unknown = [p for p in want if p not in names]
+    if unknown:
+        raise ValueError(f"optimize.log_params names {unknown} are not parameters; "
+                         f"expected a subset of {names}")
+    return np.array([n in want for n in names], dtype=bool)
+
+
 def run_stage1(cfg, preprocess_mode: str = "both", make_plots: bool = False):
     """Preprocessing: build ZRG arrays and save to preprocess_dir.
 
@@ -287,7 +302,11 @@ def run_stage1(cfg, preprocess_mode: str = "both", make_plots: bool = False):
     phys = cfg.optimize.param_physical_bounds
     if phys and hasattr(X_train, "columns"):
         param_bounds_arr = np.array([phys[col] for col in X_train.columns])
-        X_sc, _ = fit_transform_X(X_train, param_bounds=param_bounds_arr.T)
+        _lm = _log_mask_for(cfg, X_train.columns)
+        X_sc, _ = fit_transform_X(X_train, param_bounds=param_bounds_arr.T, log_mask=_lm)
+        if _lm.any():
+            print("  log-scaled parameters: "
+                  + ", ".join(str(c) for c, f in zip(X_train.columns, _lm) if f))
     else:
         X_sc, _ = fit_transform_X(X_train)
     Y_scalers, _ = fit_transform_Y(Y_train_ZRG)
@@ -466,7 +485,9 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
         phys = cfg.optimize.param_physical_bounds
         if phys and hasattr(X_train, "columns"):
             param_bounds = np.array([phys[col] for col in X_train.columns])
-            X_sc, X_train_norm = fit_transform_X(X_train, param_bounds=param_bounds.T)
+            X_sc, X_train_norm = fit_transform_X(
+                X_train, param_bounds=param_bounds.T,
+                log_mask=_log_mask_for(cfg, X_train.columns))
         else:
             X_sc, X_train_norm = fit_transform_X(X_train)
         Y_scalers, Y_train_norm = fit_transform_Y(Y_train_ZRG)
@@ -613,6 +634,8 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
         max_workers=_sf_maxworkers,
         executor=_sf_executor,
         checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
+        data_sig={"X": tuple(X_train_norm.shape), "Y": tuple(Y_train_norm.shape),
+                  "backend": _sf_backend, "likelihood": cfg.optimize.likelihood},
     )
 
     print(f"Done. Results: {csv_path}")
@@ -684,11 +707,16 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
     Y scalers are fitted on high-fidelity data only and applied to both
     fidelities.  Obs and the cost function are identical to single-fidelity.
     """
-    from autotune_gp.gp_multifidelity import MultiFidelityGPWrapper, align_Y_to_hf_layout
+    from autotune_gp.gp_multifidelity import (MultiFidelityGPWrapper, NFidelityGPWrapper,
+                                               align_Y_to_hf_layout)
 
     mf      = cfg.multi_fidelity
     out_dir = Path(cfg.paths.preprocess_dir)
-    lf_dir  = Path(mf.low_fidelity_dir)
+    # 3+ levels when multi_fidelity.fidelity_dirs lists two or more levels
+    # below the top; otherwise the original two-level path is unchanged.
+    _lower_dirs = [Path(d) for d in (mf.fidelity_dirs or [])] or [Path(mf.low_fidelity_dir)]
+    _n_levels   = len(_lower_dirs) + 1
+    lf_dir  = _lower_dirs[-1]          # the level directly below the top
     var_names = list(cfg.data.variables)
 
     def _ts(msg):
@@ -701,10 +729,16 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
     Y_high     = gp_high["Y_train"]
     _ts(f"  HF: X={np.asarray(X_high).shape}, Y={Y_high.shape}")
 
-    gp_low     = load_gp_proj(str(lf_dir / "gp_proj.pkl"))
-    X_low      = gp_low["X_train"]
-    Y_low      = gp_low["Y_train"]
-    _ts(f"  LF: X={np.asarray(X_low).shape}, Y={Y_low.shape}")
+    _lower = []
+    for _d in _lower_dirs:
+        _g = load_gp_proj(str(_d / "gp_proj.pkl"))
+        _lower.append({"dir": _d, "X": _g["X_train"], "Y": _g["Y_train"]})
+        _ts(f"  L{len(_lower)-1} ({_d.name}): X={np.asarray(_g['X_train']).shape}, "
+            f"Y={_g['Y_train'].shape}")
+    # Downstream (bounds, diagnostics, coverage) keeps treating the level
+    # directly below the top as "LF".
+    X_low = _lower[-1]["X"]
+    Y_low = _lower[-1]["Y"]
 
     # ------------------------------------------------------------------
     hf_mask_path = out_dir / "column_mask.pkl"
@@ -715,8 +749,13 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             hf_mask = pickle.load(f)
         with open(lf_mask_path, "rb") as f:
             lf_mask = pickle.load(f)
-        Y_low = align_Y_to_hf_layout(Y_low, lf_mask, hf_mask)
-        _ts(f"  LF Y after alignment: {Y_low.shape}")
+        for _l in _lower:
+            _mp = _l["dir"] / "column_mask.pkl"
+            if _mp.exists() and _l["Y"].shape[1] != Y_high.shape[1]:
+                with open(_mp, "rb") as f:
+                    _l["Y"] = align_Y_to_hf_layout(_l["Y"], pickle.load(f), hf_mask)
+                _ts(f"  {_l['dir'].name} Y after alignment: {_l['Y'].shape}")
+        Y_low = _lower[-1]["Y"]
     elif Y_low.shape[1] != Y_high.shape[1]:
         raise ValueError(
             f"LF and HF feature counts differ ({Y_low.shape[1]} vs {Y_high.shape[1]}) "
@@ -795,7 +834,13 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
 
     # ------------------------------------------------------------------
     _ts("=== Stage 2 (multi-fidelity): Normalise ===")
-    with open(out_dir / "scalers.pkl", "rb") as f:
+    # With a small top level its own scalers are poorly estimated, and they
+    # must match the space the warm-start model was fitted in, so the config
+    # can point elsewhere (in practice the level below).
+    _sc_dir = Path(mf.scalers_dir) if mf.scalers_dir else out_dir
+    if _sc_dir != out_dir:
+        _ts(f"  using scalers from {_sc_dir.name}")
+    with open(_sc_dir / "scalers.pkl", "rb") as f:
         saved = pickle.load(f)
     X_sc      = saved["X_pipeline"]
     Y_scalers = [saved[f"Y_pipeline_{v}"] for v in var_names]
@@ -805,7 +850,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
     # reduction happens afterwards; MinMaxScaler is per-feature, so
     # normalise-then-slice is identical to slice-then-normalise.
     X_high_norm = X_sc.transform(X_high)
-    X_low_norm  = X_sc.transform(X_low)
+    _X_lower_norm = [np.asarray(X_sc.transform(_l["X"]), dtype=float) for _l in _lower]
+    X_low_norm  = _X_lower_norm[-1]
 
     # Apply parameter reduction for surrogate training and optimization
     if top_k_params is not None:
@@ -814,7 +860,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         X_low  = (X_low.iloc[:, top_idx]
                   if hasattr(X_low,  "iloc") else np.asarray(X_low)[:, top_idx])
         X_high_norm = np.asarray(X_high_norm)[:, top_idx]
-        X_low_norm  = np.asarray(X_low_norm)[:, top_idx]
+        _X_lower_norm = [np.asarray(x)[:, top_idx] for x in _X_lower_norm]
+        X_low_norm  = _X_lower_norm[-1]
         _ts(f"  Surrogate and optimization will use top-{top_k_params} params.")
 
     def _norm_Y(Y):
@@ -824,7 +871,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         ).transpose(1, 2, 0)
 
     Y_high_norm = _norm_Y(Y_high)
-    Y_low_norm  = _norm_Y(Y_low)
+    _Y_lower_norm = [_norm_Y(_l["Y"]) for _l in _lower]
+    Y_low_norm  = _Y_lower_norm[-1]
     _ts(f"  HF norm: X={X_high_norm.shape}, Y={Y_high_norm.shape}")
     _ts(f"  LF norm: X={X_low_norm.shape},  Y={Y_low_norm.shape}")
 
@@ -837,20 +885,64 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
     # ------------------------------------------------------------------
     _gp_ckpt = Path(cfg.paths.output_dir) / "mf_gp_trained.pkl"
     _gp_ckpt.parent.mkdir(parents=True, exist_ok=True)
+
+    # Shapes of the data this run is about to use, for the staleness check below.
+    _want_shapes = [tuple(X.shape) for X in _X_lower_norm + [X_high_norm]]
+
+    gp = None
     if _gp_ckpt.exists():
         _ts(f"=== Stage 2 (multi-fidelity): Loading saved GP from {_gp_ckpt} ===")
         with open(_gp_ckpt, "rb") as f:
             gp = pickle.load(f)
-        _ts("  GP loaded.")
-    else:
+        # A saved GP is only reusable if it was trained on the data we have now.
+        # Re-running after adding ensemble members would otherwise silently
+        # reuse the old surrogate and report results as if they came from the
+        # new one -- the existence of the file says nothing about its contents.
+        _got_shapes = None
+        if hasattr(gp, "X_levels"):
+            _got_shapes = [tuple(np.asarray(X).shape) for X in gp.X_levels]
+        elif hasattr(gp, "X_low") and hasattr(gp, "X_high"):
+            _got_shapes = [tuple(np.asarray(gp.X_low).shape),
+                           tuple(np.asarray(gp.X_high).shape)]
+        if _got_shapes is None:
+            _ts(f"  WARNING: cannot verify the saved GP's training set "
+                f"({type(gp).__name__} exposes no X attributes); assuming it matches.")
+            _ts("  GP loaded.")
+        elif _got_shapes != _want_shapes:
+            _ts(f"  STALE: saved GP was trained on {_got_shapes} but this run has "
+                f"{_want_shapes}.")
+            if skip_gp:
+                raise SystemExit(
+                    f"--skip-gp was set but the saved GP at {_gp_ckpt} was trained on "
+                    f"{_got_shapes}, while this run's data is {_want_shapes}. Delete or "
+                    "move the stale GP and retrain, or point output_dir elsewhere."
+                )
+            _ts("  Discarding it and retraining from the current data.")
+            gp = None
+        else:
+            _ts(f"  GP loaded (training set {_got_shapes} matches).")
+
+    if gp is None:
         if skip_gp:
             raise FileNotFoundError(
                 f"--skip-gp was set but no saved GP found at {_gp_ckpt}. "
                 "Run without --skip-gp first to train and save the GP."
             )
-        _ts("=== Stage 2 (multi-fidelity): Train AR1 GP ===")
+        _ts(f"=== Stage 2 (multi-fidelity): Train {_n_levels}-level AR GP ===")
         _t_gp = time.time()
-        gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
+        if _n_levels == 2:
+            gp = MultiFidelityGPWrapper(X_low_norm, Y_low_norm, X_high_norm, Y_high_norm)
+        else:
+            _warm = None
+            if mf.warm_start_gp:
+                _ts(f"  warm start from {mf.warm_start_gp}")
+                with open(mf.warm_start_gp, "rb") as f:
+                    _warm = pickle.load(f)
+            gp = NFidelityGPWrapper(
+                _X_lower_norm + [X_high_norm], _Y_lower_norm + [Y_high_norm],
+                top_kernel=mf.top_kernel, warm_start=_warm,
+                freeze_lower=bool(mf.freeze_lower and _warm is not None),
+            )
         gp.train()
         _ts(f"  AR1 GP training complete in {(time.time() - _t_gp)/60:.1f} min.")
         with open(_gp_ckpt, "wb") as f:
@@ -871,11 +963,24 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                     + list(cfg.data.regions_list) + ["global"]) * n_snaps
     hp_dir = (Path(cfg.diagnostics.output_dir) if cfg.diagnostics.output_dir
               else Path(cfg.paths.output_dir) / "diagnostics")
-    gp.save_hyperparameters(
-        path=str(hp_dir / "hyperparameters.pkl"),
-        var_names=var_names,
-        feat_labels=_snap_labels,
-    )
+    if hasattr(gp, "save_hyperparameters"):
+        gp.save_hyperparameters(
+            path=str(hp_dir / "hyperparameters.pkl"),
+            var_names=var_names,
+            feat_labels=_snap_labels,
+        )
+    else:
+        hp_dir.mkdir(parents=True, exist_ok=True)
+        _hp = gp.hyperparameters()
+        _hp.update(var_names=var_names, feat_labels=_snap_labels)
+        with open(hp_dir / "hyperparameters.pkl", "wb") as f:
+            pickle.dump(_hp, f)
+        _ts(f"  Saved {_hp['n_levels']}-level hyperparameters → "
+            f"{hp_dir / 'hyperparameters.pkl'}")
+        for t in range(_hp["rho"].shape[-1]):
+            r = _hp["rho"][..., t]
+            _ts(f"    rho[L{t}->L{t+1}]: min/mean/max = "
+                f"{r.min():.3f} / {r.mean():.3f} / {r.max():.3f}")
 
     # ------------------------------------------------------------------
     print("=== Stage 2 (multi-fidelity): Optimize ===")
@@ -926,8 +1031,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         # evaluation ever asks the GP to extrapolate. A few control-run defaults
         # sit a hair past the PPE's sampled edge (they are round numbers at the
         # physical bounds); this snaps them to the nearest sampled value.
-        _stacked = np.vstack([np.asarray(X_high_norm, dtype=float),
-                              np.asarray(X_low_norm, dtype=float)])
+        _stacked = np.vstack([np.asarray(X_high_norm, dtype=float)]
+                             + [np.asarray(x, dtype=float) for x in _X_lower_norm])
         _samp_lo, _samp_hi = _stacked.min(axis=0), _stacked.max(axis=0)
         _clipped = np.clip(x_default_norm, _samp_lo, _samp_hi)
         for i in range(len(param_names)):
@@ -995,9 +1100,9 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
     # Resolve full-dimension bounds, then slice to the varied params.
     n_full = len(param_names) if param_names else cfg.optimize.n_params
     bl_full, bh_full = _resolve_opt_bounds(
-        cfg, [X_high_norm, X_low_norm], param_names, n_full, log=_ts)
+        cfg, [X_high_norm] + _X_lower_norm, param_names, n_full, log=_ts)
     _coverage_tree, _coverage_threshold = build_training_coverage_tree(
-        [X_high_norm, X_low_norm], bl_full, bh_full)
+        [X_high_norm] + _X_lower_norm, bl_full, bh_full)
     if cfg.optimize.training_distance_penalty_lambda:
         _ts(f"  Training-coverage penalty active: lambda={cfg.optimize.training_distance_penalty_lambda}, "
             f"threshold={_coverage_threshold:.4f} (training ensemble's own max internal spacing)")
@@ -1022,6 +1127,12 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         max_workers=cfg.optimize.max_workers,
         executor=cfg.optimize.executor,
         checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
+        # Identifies the surrogate. Bounds alone do not: with bounds_from_data
+        # the box comes from the widest level, so adding top-level members
+        # leaves it unchanged and stale checkpoints would be reused as results.
+        data_sig={"levels": _want_shapes,
+                  "top_kernel": getattr(gp, "top_kernel", None),
+                  "likelihood": cfg.optimize.likelihood},
     )
     print(f"Done. Results: {csv_path}")
 

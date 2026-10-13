@@ -97,9 +97,17 @@ def _make_executor(kind: str, max_workers):
 # Per-start checkpointing
 # ---------------------------------------------------------------------------
 
-def _run_signature(seed, n_xstarts, n_params, lo, hi, niter, method) -> dict:
+def _run_signature(seed, n_xstarts, n_params, lo, hi, niter, method,
+                   data_sig=None) -> dict:
     """Everything that changes what a start means. Checkpoints written by a run
-    with a different signature must not be reused."""
+    with a different signature must not be reused.
+
+    data_sig identifies the *surrogate* being optimized. Bounds alone are not
+    enough: with bounds_from_data the box is set by the widest level (ne32), so
+    adding members to the top level leaves it unchanged, and a stale checkpoint
+    set from a smaller ensemble would be silently accepted as this run's result.
+    Callers should pass something that changes whenever the GP does (training
+    set shapes are sufficient in practice)."""
     return {
         "seed":        int(seed),
         "n_xstarts":   int(n_xstarts),
@@ -108,6 +116,7 @@ def _run_signature(seed, n_xstarts, n_params, lo, hi, niter, method) -> dict:
         "bounds_high": np.asarray(hi, dtype=float).tolist(),
         "niter":       int(niter),
         "method":      str(method),
+        "data_sig":    data_sig,
     }
 
 
@@ -124,8 +133,8 @@ def _load_checkpoints(ckpt_dir: Path, sig: dict, results: np.ndarray,
             stale = True
         if stale:
             print("  Warning: existing optimize checkpoints came from a different "
-                  "configuration (seed/bounds/n_xstarts/niter/method) — ignoring "
-                  "them and re-running every start.")
+                  "configuration (seed/bounds/n_xstarts/niter/method/data) — "
+                  "ignoring them and re-running every start.")
     with open(man_path, "wb") as f:
         pickle.dump(sig, f)
     if stale:
@@ -160,7 +169,7 @@ def _save_checkpoint(ckpt_dir: Path, idx: int, row: np.ndarray):
 
 def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstarts, niter,
                       method, out_dir, max_workers=None, executor="thread",
-                      checkpoint_dir=None, blas_limit=None):
+                      checkpoint_dir=None, blas_limit=None, data_sig=None):
     """Multi-start basinhopping over cost_fn.
 
     executor       — 'thread' (default) or 'process'. Use 'process' for the
@@ -173,6 +182,11 @@ def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstart
     checkpoint_dir — if set, each start's result is written as it completes and
                      reloaded on a later run, so a walltime kill or a dead
                      worker costs only the starts still in flight.
+    data_sig       — identifier for the surrogate being optimized, stored in the
+                     checkpoint manifest. Checkpoints with a different data_sig
+                     are discarded. Pass this whenever the GP can change between
+                     runs that share an output directory, or a stale checkpoint
+                     set will be reused as if it were this run's result.
     blas_limit     — BLAS threads per worker. Defaults to 1 for the process
                      executor: N workers x the job's OMP_NUM_THREADS would badly
                      oversubscribe the node, and BLAS threading measured as
@@ -209,7 +223,8 @@ def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstart
     done: set = set()
     if ckpt_dir:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
-        sig = _run_signature(seed, n_xstarts, n_params, lo, hi, niter, method)
+        sig = _run_signature(seed, n_xstarts, n_params, lo, hi, niter, method,
+                             data_sig=data_sig)
         done = _load_checkpoints(ckpt_dir, sig, results, n_xstarts)
 
     pending = [i for i in range(n_xstarts) if i not in done]

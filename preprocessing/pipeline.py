@@ -473,7 +473,12 @@ def build_run_list_generic(
         raw = _json.load(fh)
 
     if isinstance(raw, list):
-        params_array = np.array(raw)     # (n_members, n_params)
+        # build_params_json writes None for member indices with no case dir
+        # (e.g. an ensemble split across machines). Keep indices aligned with
+        # NaN rows; any member actually selected below is checked for them.
+        width = next((len(r) for r in raw if r is not None), 0)
+        params_array = np.array([r if r is not None else [np.nan] * width for r in raw],
+                                dtype=float)     # (n_members, n_params)
         params_list_mode = True
     else:
         ppe_params_all = pd.read_json(params_json)
@@ -537,7 +542,14 @@ def build_run_list_generic(
             print(f"  Skipping {len(skipped)} non-member dir(s): {skipped}")
         sim_names = valid
         indices = [_member_to_idx(m) for m in sim_names]
+        if max(indices, default=-1) >= len(params_array):
+            raise ValueError(f"Member index {max(indices)} is beyond the {len(params_array)} "
+                             f"entries in {params_json}; rebuild the params JSON.")
         data = params_array[indices]
+        missing = [m for m, row in zip(sim_names, data) if np.isnan(row).any()]
+        if missing:
+            raise ValueError(f"No parameters in {params_json} for {len(missing)} member(s) "
+                             f"with output, e.g. {missing[:3]}; rebuild the params JSON.")
         if param_names is None:
             param_names = [str(i) for i in range(data.shape[1])]
         ppe_params = pd.DataFrame(data, index=sim_names, columns=param_names)
