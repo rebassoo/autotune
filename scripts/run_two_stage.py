@@ -59,6 +59,7 @@ from autotune_gp.cost import (
     build_training_coverage_tree, training_distance_penalty,
 )
 from autotune_gp.optimize import optimize_parallel
+from autotune_gp.model_error import extra_variance
 from autotune_gp.uncertainty import parameter_uncertainty
 from autotune_gp.evaluate import run_kfold_evaluation, select_top_params_hf
 
@@ -394,6 +395,33 @@ def _load_default_zrg(preprocess_dir):
     return saved["Y_default_ZRG"]
 
 
+def _model_error_var(cfg, var_names, Y_scalers, n_zonal, n_regions, n_snaps, log=print):
+    """sigma2_delta + sigma2_eps from optimize.model_error / obs_error, or None.
+
+    Added to the GP's predictive variance inside cost_fn (Kennedy & O'Hagan
+    2001 plug-in likelihood); None leaves the cost exactly as before.
+    """
+    ev = extra_variance(cfg.optimize.model_error, cfg.optimize.obs_error,
+                        list(var_names), Y_scalers, n_zonal, n_regions, n_snaps)
+    if ev is None:
+        return None
+    if cfg.optimize.likelihood == "mae":
+        raise ValueError("optimize.model_error/obs_error need a likelihood cost; "
+                         "'mae' never uses the variance.")
+    log("  Model/obs error added to GP variance (normalized units, median over features):")
+    for j, v in enumerate(var_names):
+        log(f"    {v}: sigma_extra median {np.sqrt(np.median(ev[0, :, j])):.3f}, "
+            f"max {np.sqrt(ev[0, :, j].max()):.3f}")
+    return ev
+
+
+def _model_error_sig(cfg):
+    """Checkpoint-signature entry; empty when unset so existing checkpoints stay valid."""
+    if not cfg.optimize.model_error and not cfg.optimize.obs_error:
+        return {}
+    return {"model_error": cfg.optimize.model_error, "obs_error": cfg.optimize.obs_error}
+
+
 def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
     """K-fold evaluation + surrogate training + optimization.
 
@@ -552,6 +580,8 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
         if param_names and low_name in param_names and high_name in param_names:
             constraint_pairs.append((param_names.index(low_name), param_names.index(high_name)))
 
+    _extra_var = _model_error_var(cfg, var_names, Y_scalers, n_zonal, n_regions, n_snaps)
+
     def cost_fn(x):
         x = np.asarray(x, dtype=float)
         for low_idx, high_idx in constraint_pairs:
@@ -559,6 +589,8 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
             if violation > 0:
                 return 1e2 + 1e2 * violation
         m, v = gp.predict(x)
+        if _extra_var is not None:
+            v = v + _extra_var
         if cfg.optimize.likelihood == "gaussian_gp_variance":
             base_cost = zrg_cost_function_gaussian_nll(
                 m, v, obs_norm, var_w, zrg_w, dy_w,
@@ -635,7 +667,8 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
         executor=_sf_executor,
         checkpoint_dir=str(Path(cfg.paths.output_dir) / "optimize_checkpoints"),
         data_sig={"X": tuple(X_train_norm.shape), "Y": tuple(Y_train_norm.shape),
-                  "backend": _sf_backend, "likelihood": cfg.optimize.likelihood},
+                  "backend": _sf_backend, "likelihood": cfg.optimize.likelihood,
+                  **_model_error_sig(cfg)},
     )
 
     print(f"Done. Results: {csv_path}")
@@ -1041,6 +1074,9 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                     f"{x_default_norm[i]:.4f} -> {_clipped[i]:.4f} (nearest sampled)")
         x_default_norm = _clipped
 
+    _extra_var = _model_error_var(cfg, var_names, Y_scalers, n_zonal, n_regions, n_snaps,
+                                  log=_ts)
+
     def cost_fn(x):
         x = np.asarray(x, dtype=float)
         if vary_idx is not None:
@@ -1052,6 +1088,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
             if full[low_idx] - full[high_idx] > 0:
                 return 1e2 + 1e2 * (full[low_idx] - full[high_idx])
         m, v = gp.predict(full)
+        if _extra_var is not None:
+            v = v + _extra_var
         if cfg.optimize.likelihood == "gaussian_gp_variance":
             base_cost = zrg_cost_function_gaussian_nll(
                 m, v, obs_norm, var_w, zrg_w, dy_w,
@@ -1132,7 +1170,8 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         # leaves it unchanged and stale checkpoints would be reused as results.
         data_sig={"levels": _want_shapes,
                   "top_kernel": getattr(gp, "top_kernel", None),
-                  "likelihood": cfg.optimize.likelihood},
+                  "likelihood": cfg.optimize.likelihood,
+                  **_model_error_sig(cfg)},
     )
     print(f"Done. Results: {csv_path}")
 

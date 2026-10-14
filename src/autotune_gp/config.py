@@ -152,6 +152,18 @@ class OptimizeCfg:
     # when every individual parameter stays within its own sampled range.
     # Default 0.0 = off, recovers the original cost exactly.
     training_distance_penalty_lambda: float = 0.0
+    # Model-discrepancy and observation-error standard deviations added to the
+    # GP's predictive variance in every likelihood except 'mae' (Kennedy &
+    # O'Hagan 2001: V = sigma2_GP + sigma2_delta + sigma2_eps). See
+    # autotune_gp.model_error and docs/model_error_residual_calibration.md.
+    # Layout: {VAR: {block: sigma}} with block in zonal / regional / global.
+    # model_error values are in normalized (StandardScaler) units, i.e. a
+    # fraction of the PPE spread at each feature, which is what
+    # scripts/calibrate_model_error.py estimates; a block may instead be given
+    # in physical units as '<block>_phys'. obs_error is always physical units.
+    # Missing variables/blocks contribute 0; both None = original cost exactly.
+    model_error: Optional[Dict[str, Dict[str, float]]] = None
+    obs_error: Optional[Dict[str, Dict[str, float]]] = None
 
 @dataclass
 class RuntimeCfg:
@@ -254,6 +266,8 @@ def load_config(path: str | Path) -> Config:
         variance_penalty_kappa=float(opt.get("variance_penalty_kappa", 0.0)),
         training_distance_penalty_lambda=float(opt.get("training_distance_penalty_lambda", 0.0)),
         student_t_dof=float(opt.get("student_t_dof", 4.0)),
+        model_error=opt.get("model_error", None),
+        obs_error=opt.get("obs_error", None),
     )
 
     rt = raw.get("runtime", {})

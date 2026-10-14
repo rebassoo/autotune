@@ -155,21 +155,62 @@ Cost: the surrogate must predict both halves → doubles the emulated outputs
 chosen by `nc_glob` + first `max_files`. The snapshot / `dy` weight machinery
 already handles multiple blocks.
 
-## 7. Implementation sketch
+## 7. Implementation (in-sample loop, §5)
 
-- `cost.py`: add an optional `extra_var` argument (shape like `pred_var`,
-  normalized units) to `zrg_cost_function_gaussian_nll`, `_laplace`,
-  `_student_t`; use `var = max(pred_var + extra_var, var_floor)`. For Laplace /
-  Student-t, add to the variance before converting to the scale parameter.
-  `extra_var = 0` must reproduce current results exactly (test).
-- Config: `likelihood.model_error: {PCP: {zonal: .., regional: .., global: ..}, ...}`
-  and `likelihood.obs_error:` in physical units; convert with the Y scalers.
-- New `scripts/calibrate_model_error.py`: load surrogate + best θ̂, compute
-  residuals and σ²3 at θ̂, update σ²_δ per §5, write YAML, call the optimizer,
-  loop. Log θ̂_k and σ_δ,k per round.
-- Profiled-out check: if σ_δ dominates V, maximizing over σ_δ analytically
-  gives cost ≈ Σ_b (N_b / 2) · log RSS_b(θ) — no weights, no error guess.
-  Its argmin should agree with the iterative result.
+**Cost.** `optimize.model_error` / `optimize.obs_error` in the config
+(`src/autotune_gp/config.py`). `src/autotune_gp/model_error.py::extra_variance`
+turns them into σ²_δ + σ²_ε per feature in normalized units, and
+`run_two_stage.py` adds that to the GP's `pred_var` inside `cost_fn` before
+the Gaussian / Laplace / Student-t cost, i.e. `var = max(pred_var + extra,
+var_floor)`. Unset → bit-for-bit the old cost, and the checkpoint signature is
+unchanged; set → the values go into the optimizer checkpoint signature, so
+rounds with different σ never reuse each other's starts.
+
+```yaml
+optimize:
+  model_error:            # normalized units = fraction of the PPE spread per feature
+    PCP:  {zonal: 0.4, regional: 0.3, global: 0.25}
+    OSR:  {zonal: 0.3, regional: 0.3, global_phys: 2.0}   # '<block>_phys' = physical units
+  obs_error:              # always physical units
+    TLWP: {zonal: 0.014, regional: 0.014}
+```
+
+**Loop.** `scripts/calibrate_model_error.py` (multi-fidelity surrogates):
+
+1. starting σ: `--init-frac` (default 0.25 normalized, every block), or the
+   config's `model_error`, or `--round0-dir` = reuse an existing optimization
+   that had no model error as round 0;
+2. each round runs `run_two_stage.py --stage 2 --skip-gp` with the current σ
+   into `<out-dir>/round_K/` (the trained GP is symlinked in);
+3. takes the best of the starts, predicts μ, σ²_GP there, and re-estimates
+   σ_δ per variable × {zonal, regional} by a 1-D maximization of the **same**
+   block likelihood the optimizer uses (`estimate_block_sigma2`; Gaussian
+   method-of-moments value logged alongside). For Student-t the estimated
+   number is on the squared-scale footing the cost uses;
+4. global σ is held fixed (`--global VAR=SIGMA`, physical units);
+5. stops when max|Δθ̂| < `--tol-theta` (0.02) and every σ moved by less than
+   `--tol-sigma` (10 %) relative to max(σ, `--sigma-floor` 0.1);
+6. `--sensitivity` then re-optimizes at σ_δ × 0.5 and × 2 (§8).
+
+Outputs: `calibration_log.json` (θ̂, cost, σ used / next in normalized and
+median physical units, per-block rms residual, rms GP sd, in-sample mean r²/V
+— variance-corrected for Student-t), `model_error_final.yaml`,
+`config_calibrated.yaml`. Resumable at round and at start level.
+
+Batch: `jobs/calibrate_model_error_mf3.sh` (CONFIG / OUT / ROUND0 /
+GLOBAL_ARGS via `--export`). With a 3-level GP a 40-start round is ~3.5–4.5 h,
+so 3–4 rounds + sensitivity can exceed 24 h; resubmit and it continues.
+
+Typical use when new ensemble members arrive: retrain as usual, run the
+normal 40-start optimization (that is round 0, no model error), then
+
+    sbatch --dependency=afterok:<opt job> \
+      --export=ALL,CONFIG=configs/<cfg>.yaml,OUT=<dir>,ROUND0=<opt output_dir> \
+      jobs/calibrate_model_error_mf3.sh
+
+Not yet implemented: the out-of-sample month split (§6) and the profiled-out
+cross-check (if σ_δ dominates V, maximizing over σ_δ gives
+cost ≈ Σ_b (N_b / 2) · log RSS_b(θ); its argmin should agree with the loop).
 
 ## 8. Checks once it runs
 
