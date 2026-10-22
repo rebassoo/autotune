@@ -27,7 +27,16 @@
 # it as round 0 (saves one round).
 CONFIG=${CONFIG:-configs/perlmutter_mf3_ne256_studentt_dof4_annual.yaml}
 OUT=${OUT:-/pscratch/sd/r/rebassoo/autotune/calib_mf3_ne256_studentt_dof4}
-GLOBAL_ARGS=${GLOBAL_ARGS:-"--global OSR=2.0 --global OLR=2.0"}   # W/m^2, CERES-level
+# Fixed global-mean error (physical units). Unset -> OSR/OLR 2 W/m^2;
+# GLOBAL_ARGS=none -> no global error (zero).
+GLOBAL_ARGS=${GLOBAL_ARGS-"--global OSR=2.0 --global OLR=2.0"}
+[ "$GLOBAL_ARGS" = none ] && GLOBAL_ARGS=""
+# INIT_ARGS: starting sigma when there is no ROUND0, e.g. "--init-frac 0".
+INIT_ARGS=${INIT_ARGS-}
+# SENS=0 skips the sigma x0.5 / x2 sensitivity runs.
+SENS=${SENS-1}
+# GP_PKL: trained surrogate, when the config's output_dir does not hold it.
+GP_PKL=${GP_PKL-}
 
 cd /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/autotune
 export PYTHONUNBUFFERED=1
@@ -37,9 +46,10 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
 echo "Start: $(date)"; START=$(date +%s)
-echo "CONFIG=$CONFIG OUT=$OUT ROUND0=${ROUND0:-none} $GLOBAL_ARGS"
+echo "CONFIG=$CONFIG OUT=$OUT ROUND0=${ROUND0:-none} GLOBAL_ARGS=[$GLOBAL_ARGS] INIT_ARGS=[$INIT_ARGS] SENS=$SENS GP_PKL=${GP_PKL:-config}"
 /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/calibrate_model_error.py \
     --config "$CONFIG" --out-dir "$OUT" --n-xstarts 40 \
-    ${ROUND0:+--round0-dir "$ROUND0"} $GLOBAL_ARGS --max-rounds 4 --sensitivity
+    ${ROUND0:+--round0-dir "$ROUND0"} ${GP_PKL:+--gp-pkl "$GP_PKL"} $GLOBAL_ARGS $INIT_ARGS --max-rounds 4 \
+    $( [ "$SENS" = 1 ] && echo --sensitivity )
 END=$(date +%s); echo "End: $(date)"
 echo "Elapsed: $(( (END-START)/3600 ))h $(( (END-START)%3600/60 ))m"

@@ -1,0 +1,155 @@
+# n85 = the 72 members of perlmutter_ne256_all_annual.yaml + 13 near-balance members
+# (/pscratch/sd/b/beydoun/e3sm_scratch/pm-gpu/ne256_ppe_prod_near_balance, linked as
+# .m200-.m214; see mf_prod_v2/ne256_n85_members_nearbal_mapping.txt).
+# ne256 PPE -- top fidelity for the 3-level multi-fidelity model. ALL members.
+# Merges both batches through a symlink directory, both on CFS: the Frontier runs
+# (case tag 20260608, m001-m036) and the Perlmutter continuation (case tag
+# 20260910). The scratch copies of the continuation are mode 1770 group beydoun
+# and unreadable to us, so the symlinks point at CFS, which is also purge-safe.
+# Only members with >= 12 readable monthly files and a readable scream_input.yaml
+# are linked; max_files keeps the first 12 months, so a member that ran longer
+# still contributes the same Aug 2019 - Jul 2020 window as the observations.
+# Parameters come from each member's own scream_input.yaml (every member verified
+# to match the shared design row for its index).
+# member data:  symlinks in /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/ne256_n85_members
+# Output files are already remapped to ne32pg2, so the same grid
+# infrastructure (control_file, regions_file, obs_files) as ne32 applies.
+paths:
+  obs_pkl: null        # set after preprocessing
+  gp_proj_pkl: null    # set after training
+  output_dir: /pscratch/sd/r/rebassoo/autotune/results_ne256_n85
+  preprocess_dir: /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/preprocess_output_ne256_n85
+
+data:
+  n_zonal: 18
+  regions_list:
+    - poles
+    - extratropical_land
+    - extratropical_ocean
+    - tropical_land
+    - ascending_tropical_ocean
+    - descending_tropical_ocean
+  variables: [PCP, OSR, OLR, TLWP]
+
+weights:
+  variables:
+    PCP: 0.25
+    OSR: 0.25
+    OLR: 0.25
+    TLWP: 0.25
+  zrg:
+    zonal: 0.3333333333
+    regional: 0.3333333333
+    global: 0.3333333333
+  dy:
+    ANN: 1.0
+  zonal_weights: null
+  regional_weights: null
+
+optimize:
+  seed: 50
+  n_xstarts: 5
+  niter: 1
+  method: L-BFGS-B
+  bounds:
+    low: 0.0
+    high: 1.0
+  n_params: 19
+  # Restrict the search to the range the PPE actually sampled; the declared
+  # param_physical_bounds are much wider than the design for several params.
+  bounds_from_data: true
+  max_workers: null
+  param_ordering_constraints:
+    - [lambda_low, lambda_high]
+  # Sampled log-uniformly in the design (verified against the design marginals
+  # with a KS test: p=1.0 uniform in log space, 0.0 in linear; the other 13
+  # parameters are the reverse). Scaled in log space so the training inputs are
+  # uniform in the GP's input space -- a single ARD lengthscale cannot otherwise
+  # cover both the dense low end and the sparse high end.
+  log_params:
+    - c_diag_3rd_mom
+    - coeff_kh
+    - coeff_km
+    - accretion_prefactor
+    - max_total_ni
+    - autoconversion_prefactor
+  param_physical_bounds:
+    thl2tune:                              [0.1, 10]
+    qw2tune:                               [0.1, 10]
+    length_fac:                            [0.1, 10]
+    c_diag_3rd_mom:                        [0.01, 10]
+    coeff_kh:                              [0.01, 1]
+    coeff_km:                              [0.01, 1]
+    lambda_low:                            [0.0001, 0.1]
+    lambda_high:                           [0.0001, 0.1]
+    spa_ccn_to_nc_factor:                  [100, 5000]
+    cldliq_to_ice_collection_factor:       [0.1, 1]
+    rain_to_ice_collection_factor:         [0.1, 1]
+    accretion_prefactor:                   [0.01, 100]
+    deposition_nucleation_exponent:        [0.2, 0.304]
+    max_total_ni:                          [500000, 10000000]
+    ice_sedimentation_factor:              [0.1, 2]
+    rain_selfcollection_breakup_diameter:  [0, 0.0005]
+    autoconversion_prefactor:              [10, 20000]
+    autoconversion_qc_exponent:            [2, 4]
+    autoconversion_radius:                 [2.0e-05, 5.0e-05]
+
+runtime:
+  train_gp: true
+  backend: numpy
+  device: cpu
+  tf_determinism: false
+
+diagnostics:
+  enabled: true
+  output_dir: null
+
+# ---- Preprocessing inputs ----
+preprocess:
+  params_json: /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/normranked_ne256_n85.json
+  control_file: /pscratch/sd/b/beydoun/e3sm_scratch/pm-gpu/ne32_ppe_prod_v2/PPEensemble_1node_full1024.ne32pg2_ne32pg2.F2010-SCREAMv1.20260608.m000/run/1ma_ne32pg2.AVERAGE.nmonths_x1.2019-08-01-00000.nc
+  regions_file: /global/cfs/cdirs/e3sm/beydoun/autotune_utils/1ma_ne32pg2.AVERAGE.201909_202009.mean.omega500_masks.nc
+
+  drop_zonal_bands: [-85, -75, 85]
+
+  snapshots:
+    - label: ANN
+      weight: 1.0
+      sim_dir: /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/ne256_n85_members/
+      obs_dir: null
+      nc_glob: "1ma_ne32pg2.AVERAGE.nmonths_x1.*.nc"
+      # 12, not 13: the monthly files are named by period START but their time
+      # coordinate is period END, so 13 files span Aug 2019 - Aug 2020 while the
+      # obs (*_201908_202007.nc) cover Aug 2019 - Jul 2020. The 13th file adds a
+      # month the obs lack and double-weights August (15.7%% vs 8.5%% of the
+      # days_in_month-weighted annual mean), biasing RESTOM by ~-0.55 W/m2.
+      # min_files 12 also admits members that stopped at exactly 12 months.
+      min_files: 12
+      max_files: 12
+  variables:
+    PCP:
+      sim_field: precip_total_surf_mass_flux
+      sim_components: [precip_liq_surf_mass_flux, precip_ice_surf_mass_flux]
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/PRECT_IMERG_ne32pg2_201908_202007.nc
+      obs_nc_var: PRECT
+      obs_scale: 1.0
+    OSR:
+      sim_field: SW_flux_up_at_model_top
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
+      obs_nc_var: toa_sw_all_mon
+      obs_scale: 1.0
+    OLR:
+      sim_field: LW_flux_up_at_model_top
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/CERES_EBAF_ne32pg2_201908_202007.nc
+      obs_nc_var: toa_lw_all_mon
+      obs_scale: 1.0
+    TLWP:
+      sim_field: LiqWaterPath
+      sim_components: [LiqWaterPath, RainWaterPath]
+      obs_files:
+        ANN: /global/u2/r/rebassoo/work/2026_05_11_MultiFidelityAutotuning/TLWP_MACLWP_ne32pg2_201908_202007.nc
+      obs_nc_var: totallwp
+      obs_scale: 0.001   # g/m² → kg/m²
