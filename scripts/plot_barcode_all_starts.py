@@ -38,14 +38,18 @@ def main() -> None:
     ap.add_argument("--results-dir", required=True)
     ap.add_argument("--config", default=None,
                     help="Config to read parameter names from (optional).")
+    ap.add_argument("--checkpoint-subdir", default="optimize_checkpoints",
+                    help="Subdirectory of --results-dir holding start_*.pkl "
+                         "(e.g. optimize_checkpoints_n47_STALE for archived runs).")
     ap.add_argument("--out", required=True)
     ap.add_argument("--title", default=None)
     args = ap.parse_args()
 
     rd = Path(args.results_dir)
-    files = sorted(glob.glob(str(rd / "optimize_checkpoints" / "start_*.pkl")))
+    ck = rd / args.checkpoint_subdir
+    files = sorted(glob.glob(str(ck / "start_*.pkl")))
     if not files:
-        raise SystemExit(f"No start_*.pkl checkpoints in {rd / 'optimize_checkpoints'}")
+        raise SystemExit(f"No start_*.pkl checkpoints in {ck}")
     A = np.array([pickle.load(open(f, "rb")) for f in files], dtype=float)
     params, cost = A[:, :-1], A[:, -1]
     n, n_params = params.shape
