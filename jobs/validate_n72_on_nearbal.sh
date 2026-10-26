@@ -15,7 +15,9 @@
 cd /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/autotune
 export PYTHONUNBUFFERED=1
 for gp in /pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_studentt_dof4/mf_gp_trained.pkl \
-          /pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_studentt_dof4_COLD/mf_gp_trained.pkl; do
+          /pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_studentt_dof4_COLD/mf_gp_trained.pkl \
+          /pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_n72iso_studentt_dof4/mf_gp_trained.pkl \
+          /pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_n72iso_studentt_dof4_COLD/mf_gp_trained.pkl; do
     [ -f "$gp" ] || { echo "skip (not trained yet): $gp"; continue; }
     tag=$(basename $(dirname $gp))
     /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/validate_on_new_members.py \

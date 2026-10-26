@@ -27,6 +27,12 @@ START=$(date +%s)
     --config configs/perlmutter_ne256_n85_annual.yaml \
     --stage 1
 
+# Fail (and so stop every afterok job) unless all 85 members were read; an
+# unreadable member is skipped silently by stage 1.
+N=$(/pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python -c "import pickle; print(len(pickle.load(open('/global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2/preprocess_output_ne256_n85/run_list.pkl','rb'))['sim_names']))")
+echo "members preprocessed: $N"
+[ "$N" -eq 85 ] || { echo "ERROR: expected 85 members"; exit 1; }
+
 END=$(date +%s)
 echo "End: $(date)"
 echo "Elapsed: $(( (END - START) / 60 ))m $(( (END - START) % 60 ))s"

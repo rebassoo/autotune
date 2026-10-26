@@ -72,8 +72,10 @@ def main() -> None:
     order = np.argsort(cost)                 # best first
     params, cost = params[order], cost[order]
 
-    near = int((cost <= cost.min() * 1.01).sum()) if cost.min() > 0 else 0
-    spread = params[cost <= cost.min() * 1.01].ptp(axis=0).max() if near > 1 else 0.0
+    # 1% of |best|: likelihood costs can be negative once a model-error term is added
+    is_near = cost <= cost.min() + 0.01 * abs(cost.min())
+    near = int(is_near.sum())
+    spread = params[is_near].ptp(axis=0).max() if near > 1 else 0.0
 
     fig, ax = plt.subplots(figsize=(max(14, n_params * 0.62), 0.22 * n + 4.4),
                            facecolor=SURFACE)
