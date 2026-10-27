@@ -21,6 +21,11 @@ class VariableCfg:
     obs_nc_var: str             # netCDF variable name inside the obs file
     obs_scale: float = 1.0      # multiply obs values by this (e.g. 0.001 for g→kg)
     sim_components: Optional[List[str]] = None  # if set, sim_field = sum of these
+    # Computed per monthly file, before the time average (generic pipeline only):
+    #   {kind: linear, terms: {FIELD: coeff, ...}}   sim_field = sum(coeff * FIELD)
+    #   {kind: plev, field: FIELD, plev: PA}          FIELD interpolated in log p_mid
+    #                                                 to PA; NaN below ground
+    sim_derived: Optional[dict] = None
     # Generic N-snapshot mode: {snapshot_label: obs_filename}
     obs_files: Optional[Dict[str, str]] = None
     # Two-snapshot (DY1/DY2) backward-compat mode:

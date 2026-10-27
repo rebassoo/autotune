@@ -73,6 +73,9 @@ def main():
     ap.add_argument("--calib", action="append", required=True, help="LABEL=calibration dir")
     ap.add_argument("--alias", action="append", default=[],
                     help="OLD=NEW substring replacement for run dirs that were renamed")
+    ap.add_argument("--no-errorbars", action="store_true",
+                    help="Points only, joined across rounds. The Hessian stderrs of the "
+                         "weighted-mean cost are inflated (see above), often to the whole box.")
     ap.add_argument("--title", default=None)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -96,11 +99,16 @@ def main():
     for ax, (label, rounds, conv) in zip(axes[0], runs):
         k_n = len(rounds)
         off = np.linspace(-0.3, 0.3, k_n) if k_n > 1 else [0.0]
+        if args.no_errorbars and k_n > 1:
+            X = np.array([r["x"] for r in rounds])            # (rounds, params)
+            for i in range(n):
+                ax.plot(X[:, i], y[i] + np.asarray(off), color=GREY, lw=0.8, zorder=2)
         for k, r in enumerate(rounds):
             lo = np.clip(r["x"] - np.nan_to_num(r["se"]), 0, 1)
             hi = np.clip(r["x"] + np.nan_to_num(r["se"]), 0, 1)
             yy = y + off[k]
-            ax.hlines(yy, lo, hi, color=colors[k], lw=2)
+            if not args.no_errorbars:
+                ax.hlines(yy, lo, hi, color=colors[k], lw=2)
             ok = ~r["at_bound"]
             ax.scatter(r["x"][ok], yy[ok], s=28, color=colors[k], edgecolor="white", lw=0.6,
                        zorder=3, label=f"round {r['round']} (cost {r['cost']:.3f})")
@@ -110,16 +118,22 @@ def main():
             ax.axhspan(yi - 0.5, yi + 0.5, color="#f3f3f3", zorder=0, lw=0)
         ax.set_xlim(-0.02, 1.02)
         ax.set_ylim(-0.6, n - 0.4)
-        ax.set_xlabel("normalized parameter (scaler range; search box may be narrower)")
+        ax.set_xlabel("normalized parameter")
         ax.set_title(f"{label}  ({'converged' if conv else 'not converged'})", fontsize=11)
         ax.spines[["top", "right"]].set_visible(False)
         ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.03), fontsize=8, frameon=False,
                   ncol=2)
     axes[0][0].set_yticks(y)
     axes[0][0].set_yticklabels(names, fontsize=9)
-    fig.suptitle(args.title or "Best fit ±1 Hessian stderr after each calibration round "
-                 "(hollow = at a bound, no stderr)", y=0.995)
-    fig.tight_layout()
+    default_title = ("Best fit after each calibration round (hollow = at a bound)"
+                     if args.no_errorbars else
+                     "Best fit ±1 Hessian stderr after each calibration round "
+                     "(hollow = at a bound, no stderr)")
+    fig.suptitle(args.title or default_title, y=0.995)
+    fig.text(0.01, 0.003, "x: 0-1 over the scaler range; the search box is narrower for some "
+             "parameters, so a hollow 'at a bound' point can sit inside 0-1.",
+             fontsize=8, color=GREY)
+    fig.tight_layout(rect=(0, 0.015, 1, 1))
     fig.savefig(args.out, dpi=150)
     print(f"Saved {args.out}")
 

@@ -280,3 +280,55 @@ class TestDropNanExplicit:
         )
         assert new_n_zonal == self.N_ZONAL - 2
         assert updated["VAR1_zrg_ppedataset"].shape[1] == 2 * n_per_snap - 4
+
+
+# ---------------------------------------------------------------------------
+# Derived simulation fields (sim_derived)
+# ---------------------------------------------------------------------------
+
+from autotune_gp.config import VariableCfg  # noqa: E402
+from preprocessing.pipeline import _interp_to_plev, _load_member_worker  # noqa: E402
+
+
+def test_interp_to_plev_is_exact_for_linear_in_log_p():
+    p = np.array([[100.0, 1e4, 5e4, 8e4, 1e5],
+                  [100.0, 1e4, 5e4, 8e4, 8.4e4]])          # 2nd column: ground at 840 hPa
+    f = 3.0 + 2.0 * np.log(p)
+    out = _interp_to_plev(f, p, 2e4)
+    np.testing.assert_allclose(out, 3.0 + 2.0 * np.log(2e4))
+    below = _interp_to_plev(f, p, 8.5e4)
+    assert np.isfinite(below[0]) and np.isnan(below[1])     # 850 hPa below ground -> NaN
+    assert np.isnan(_interp_to_plev(f, p, 50.0)).all()       # above the model top -> NaN
+
+
+def test_worker_forms_derived_fields_monthly_then_averages(tmp_path):
+    lev = 4
+    p_month = [np.array([1e4, 3e4, 6e4, 1e5]), np.array([1e4, 3e4, 6e4, 8.0e4])]
+    files = []
+    for k, (start, pm) in enumerate(zip(["2019-08-01", "2019-09-01"], p_month)):
+        ds = xr.Dataset(
+            {"U": (("time", "ncol", "lev"), np.log(pm)[None, None, :].repeat(1, 1) * (k + 1)),
+             "p_mid": (("time", "ncol", "lev"), pm[None, None, :]),
+             "SW_dn": (("time", "ncol"), [[340.0]]),
+             "SW_up": (("time", "ncol"), [[100.0 + k]]),
+             "LW_up": (("time", "ncol"), [[240.0]])},
+            coords={"time": [np.datetime64(start)]})
+        f = tmp_path / f"m{k}.nc"
+        ds.to_netcdf(f)
+        files.append(str(f))
+    variables = {
+        "NETTOA": VariableCfg(sim_field="NETTOA", obs_nc_var="x",
+                              sim_derived={"kind": "linear",
+                                           "terms": {"SW_dn": 1, "SW_up": -1, "LW_up": -1}}),
+        "U500": VariableCfg(sim_field="U500", obs_nc_var="x",
+                            sim_derived={"kind": "plev", "field": "U", "plev": 5e4}),
+        "U850": VariableCfg(sim_field="U850", obs_nc_var="x",
+                            sim_derived={"kind": "plev", "field": "U", "plev": 8.5e4}),
+    }
+    _, arrays, _ = _load_member_worker(("m", files, None, variables))
+    assert set(arrays) == {"NETTOA", "U500", "U850"}       # 3-D inputs are not returned
+    w = np.array([31.0, 30.0]) / 61.0
+    np.testing.assert_allclose(arrays["NETTOA"], w @ [0.0, -1.0])
+    np.testing.assert_allclose(arrays["U500"], w @ [np.log(5e4), 2 * np.log(5e4)])
+    # month 2 has ground at 800 hPa: 850 hPa is NaN there, so only month 1 counts
+    np.testing.assert_allclose(arrays["U850"], np.log(8.5e4))

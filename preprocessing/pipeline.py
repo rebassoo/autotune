@@ -51,19 +51,83 @@ REGIONS_LIST = [
 # Shared helpers used by both DY1/DY2 and generic pipelines
 # ---------------------------------------------------------------------------
 
+def _derived_inputs(spec):
+    """Fields a sim_derived spec reads from the member files."""
+    if spec["kind"] == "linear":
+        return set(spec["terms"])
+    if spec["kind"] == "plev":
+        return {spec["field"], "p_mid"}
+    raise ValueError(f"unknown sim_derived kind {spec['kind']!r} (expected 'linear' or 'plev')")
+
+
 def _raw_fields_needed(variables):
+    """Fields read from the member files."""
     needed = set()
     for var_cfg in variables.values():
-        if var_cfg.sim_components:
+        if getattr(var_cfg, "sim_derived", None):
+            needed.update(_derived_inputs(var_cfg.sim_derived))
+        elif var_cfg.sim_components:
             needed.update(var_cfg.sim_components)
         else:
             needed.add(var_cfg.sim_field)
     return needed
 
 
+def _output_fields(variables):
+    """2-D fields a loaded member carries into _prep_sim (derived ones already computed)."""
+    out = set()
+    for var_cfg in variables.values():
+        if getattr(var_cfg, "sim_derived", None):
+            out.add(var_cfg.sim_field)
+        elif var_cfg.sim_components:
+            out.update(var_cfg.sim_components)
+        else:
+            out.add(var_cfg.sim_field)
+    return out
+
+
+def _interp_to_plev(field, p, plev):
+    """Linear-in-log(p) interpolation of field to pressure plev along the last axis.
+
+    p must increase along that axis (model top first). Columns where plev lies
+    below the lowest level (below ground) or above the top come back NaN.
+    """
+    k = (p < plev).sum(axis=-1) - 1           # last level above plev
+    ok = (k >= 0) & (k < p.shape[-1] - 1)
+    k = np.clip(k, 0, p.shape[-1] - 2)[..., None]
+
+    def at(a, kk):
+        return np.take_along_axis(a, kk, axis=-1)[..., 0]
+
+    lp0, lp1 = np.log(at(p, k)), np.log(at(p, k + 1))
+    f0, f1 = at(field, k), at(field, k + 1)
+    out = f0 + (np.log(plev) - lp0) / (lp1 - lp0) * (f1 - f0)
+    return np.where(ok, out, np.nan)
+
+
+def _add_derived(ds, variables):
+    """Compute every sim_derived field on the per-month dataset (before averaging)."""
+    for var_cfg in variables.values():
+        spec = getattr(var_cfg, "sim_derived", None)
+        if not spec:
+            continue
+        if spec["kind"] == "linear":
+            ds[var_cfg.sim_field] = sum(float(c) * ds[f] for f, c in spec["terms"].items())
+        else:
+            fld, p = ds[spec["field"]], ds["p_mid"]
+            if fld.dims[-1] != p.dims[-1] or not bool((p.isel({p.dims[-1]: 0})
+                                                        < p.isel({p.dims[-1]: -1})).all()):
+                raise ValueError(f"{spec['field']}/p_mid: expected a shared vertical last "
+                                 "dimension with pressure increasing downward")
+            vals = _interp_to_plev(np.asarray(fld.values, float), np.asarray(p.values, float),
+                                   float(spec["plev"]))
+            ds[var_cfg.sim_field] = (fld.dims[:-1], vals)
+    return ds
+
+
 def _prep_sim(ds, prefix, variables):
     """Drop unneeded vars, compute derived fields, rename with snapshot prefix."""
-    raw_needed = _raw_fields_needed(variables)
+    raw_needed = _output_fields(variables)
     to_drop = [v for v in ds.data_vars if v not in raw_needed]
     ds = ds.drop_vars(to_drop, errors="ignore")
     ds = ds.drop_vars("p_levs", errors="ignore")
@@ -565,12 +629,18 @@ def build_run_list_generic(
 
 def _load_member_worker(args):
     """Load and time-average one member's files; returns numpy arrays (picklable)."""
-    member, files, needed_vars = args
+    member, files, _needed, variables = args
     ds = xr.open_mfdataset(files, combine="by_coords", parallel=False)
+    if any(getattr(vc, "sim_derived", None) for vc in variables.values()):
+        # derived fields (pressure-level interpolation in particular) are formed
+        # month by month, then averaged like any other field; the 3-D inputs
+        # are not returned
+        ds = _add_derived(ds[sorted(_raw_fields_needed(variables))].load(), variables)
+    out_vars = _output_fields(variables)
     if "time" in ds.dims:
         weights = ds.time.dt.days_in_month.astype(float)
-        ds = ds.weighted(weights).mean(dim="time")
-    arrays = {v: ds[v].values for v in needed_vars if v in ds}
+        ds = ds[[v for v in out_vars if v in ds]].weighted(weights).mean(dim="time")
+    arrays = {v: ds[v].values for v in out_vars if v in ds}
     coords = {c: ds[c].values for c in ("lat", "lon", "ncol") if c in ds.coords or c in ds}
     return member, arrays, coords
 
@@ -602,7 +672,7 @@ def load_and_mask_generic(
     snap_datasets: Dict[str, xr.Dataset] = {}
     for snap in snapshots:
         member_files = per_snapshot_files[snap.label]
-        args = [(m, member_files[m], needed_vars) for m in sim_names]
+        args = [(m, member_files[m], needed_vars, variables) for m in sim_names]
 
         results: Dict[str, dict] = {}
         shared_coords = None

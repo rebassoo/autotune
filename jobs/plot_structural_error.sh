@@ -18,10 +18,17 @@ cd /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/autotune
 export PYTHONUNBUFFERED=1
 S=/pscratch/sd/r/rebassoo/autotune
 P=/global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2
+# TAG=n72iso (default) or n85; e.g.  sbatch --export=ALL,TAG=n85 jobs/plot_structural_error.sh
+TAG=${TAG:-n72iso}
+case $TAG in
+    n72iso) TOP=$P/preprocess_output_ne256_n85_was72; N=72 ;;
+    n85)    TOP=$P/preprocess_output_ne256_n85;       N=85 ;;
+    *) echo "unknown TAG=$TAG"; exit 1 ;;
+esac
 /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/plot_structural_error.py \
-    --calib-log $S/calib_n72iso_E3_zeroglobal/calibration_log.json --round 0 \
-    --gp-pkl $S/results_mf3_ne256_n72iso_studentt_dof4/mf_gp_trained.pkl \
-    --top-dir $P/preprocess_output_ne256_n85_was72 \
+    --calib-log $S/calib_${TAG}_E3_zeroglobal/calibration_log.json --round 0 \
+    --gp-pkl $S/results_mf3_ne256_${TAG}_studentt_dof4/mf_gp_trained.pkl \
+    --top-dir $TOP \
     --scalers-dir $P/preprocess_output_ne128_prod_v2 \
-    --title "Misfit at the optimum vs. PPE spread — n=72, warm start, isotropic top kernel, before model error" \
-    --out docs/structural_error_n72iso
+    --title "Misfit at the optimum vs. PPE spread — n=$N, warm start, isotropic top kernel, before model error" \
+    --out docs/structural_error_${TAG}
