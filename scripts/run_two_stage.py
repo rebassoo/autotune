@@ -32,6 +32,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import pickle
 import sys
@@ -730,7 +732,7 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
 
 
 def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimize=False,
-                             vary_params=None):
+                             vary_params=None, freeze_from=None):
     """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
 
     High-fidelity data comes from cfg.paths.preprocess_dir (same as the
@@ -1047,15 +1049,27 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         missing = [p for p in vary_params if p not in param_names]
         if missing:
             raise ValueError(f"--vary-params names not in the parameter set: {missing}")
-        with open(out_dir / "default_params.pkl", "rb") as f:
-            _dp = pickle.load(f)
-        if list(_dp["names"]) != list(param_names):
-            raise ValueError("default_params.pkl parameter order does not match the GP's.")
-        x_default_norm = np.asarray(_dp["norm"], dtype=float)
+        if freeze_from:
+            # freeze at another run's best fit (lowest-cost row of its results CSV)
+            _csvs = sorted(Path(freeze_from).glob("results_*.csv"))
+            if not _csvs:
+                raise ValueError(f"--freeze-from {freeze_from}: no results_*.csv")
+            _best = min(csv.DictReader(open(_csvs[-1])), key=lambda r: float(r["cost"]))
+            x_default_norm = np.asarray(json.loads(_best["params"]), dtype=float)
+            _frozen_at = f"best fit of {freeze_from} (cost {float(_best['cost']):.6f})"
+        else:
+            with open(out_dir / "default_params.pkl", "rb") as f:
+                _dp = pickle.load(f)
+            if list(_dp["names"]) != list(param_names):
+                raise ValueError("default_params.pkl parameter order does not match the GP's.")
+            x_default_norm = np.asarray(_dp["norm"], dtype=float)
+            _frozen_at = f"control-run default ({_dp['default_name']})"
         vary_idx = [param_names.index(p) for p in vary_params]
         _ts(f"=== Subset optimization: varying {len(vary_idx)} params, "
-            f"freezing {len(param_names) - len(vary_idx)} at control-run default "
-            f"({_dp['default_name']}) ===")
+            f"freezing {len(param_names) - len(vary_idx)} at {_frozen_at} ===")
+        for i, p in enumerate(param_names):
+            if i not in vary_idx:
+                _ts(f"    freeze {p} = {x_default_norm[i]:.4f} (norm)")
         for p in vary_params:
             _ts(f"    vary {p}")
 
@@ -1295,6 +1309,10 @@ def main():
                         "Reuses the full GP (use with --skip-gp); no retraining. "
                         "Requires default_params.pkl in the preprocess dir. Mutually "
                         "exclusive with --top-k-params.")
+    p.add_argument("--freeze-from", type=str, default=None, metavar="RESULTS_DIR",
+                   help="With --vary-params: freeze the other parameters at the best "
+                        "fit (lowest-cost row of results_*.csv) of RESULTS_DIR instead "
+                        "of the control-run default.")
     p.add_argument("--sf-backend", choices=["esem", "gpy"], default=None,
                    help="(Single-fidelity only) GP library: 'esem' (default, "
                         "GPflow joint model) or 'gpy' (independent per-feature "
@@ -1322,6 +1340,8 @@ def main():
                    if args.vary_params else None)
     if top_k_params is not None and vary_params:
         raise ValueError("--top-k-params and --vary-params are mutually exclusive.")
+    if args.freeze_from and not vary_params:
+        raise ValueError("--freeze-from only applies with --vary-params.")
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
@@ -1334,7 +1354,8 @@ def main():
             run_stage2_multifidelity(cfg, top_k_params=top_k_params,
                                      skip_gp=args.skip_gp,
                                      skip_optimize=args.skip_optimize,
-                                     vary_params=vary_params)
+                                     vary_params=vary_params,
+                                     freeze_from=args.freeze_from)
         else:
             run_stage2(cfg, max_folds=args.kfold_folds)
     else:

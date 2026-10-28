@@ -70,7 +70,7 @@ class DataCfg:
 @dataclass
 class WeightsCfg:
     variables: Dict[str, float]         # keys must match preprocess.variables
-    zrg: Dict[str, float]
+    zrg: Dict[str, float]               # may hold "per_variable": {var: {zonal, regional, global}}
     dy: Dict[str, float]
     zonal_weights: Optional[List[float]] = None    # per-zone sample weights (len=n_zonal); None = uniform
     regional_weights: Optional[List[float]] = None # per-region sample weights (len=n_regions); None = uniform
@@ -234,6 +234,18 @@ class Config:
     preprocess: Optional[PreprocessCfg] = None
     multi_fidelity: Optional[MultiFidelityCfg] = None
 
+def _zrg_weights(w_raw):
+    """weights.zrg, with weights.zrg_per_variable folded in as zrg['per_variable']."""
+    zrg = dict(w_raw["zrg"])
+    per_var = w_raw.get("zrg_per_variable")
+    if per_var:
+        for vn, blocks in per_var.items():
+            if set(blocks) != {"zonal", "regional", "global"}:
+                raise ValueError(f"weights.zrg_per_variable.{vn}: give exactly zonal, regional, global")
+        zrg["per_variable"] = {vn: {k: float(x) for k, x in b.items()} for vn, b in per_var.items()}
+    return zrg
+
+
 def load_config(path: str | Path) -> Config:
     path = Path(path)
     with path.open("r") as f:
@@ -246,7 +258,7 @@ def load_config(path: str | Path) -> Config:
     w_raw = dict(raw["weights"])
     weights = WeightsCfg(
         variables=w_raw["variables"],
-        zrg=w_raw["zrg"],
+        zrg=_zrg_weights(w_raw),
         dy=w_raw["dy"],
         zonal_weights=w_raw.get("zonal_weights", None),
         regional_weights=w_raw.get("regional_weights", None),

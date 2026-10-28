@@ -828,3 +828,52 @@ def training_distance_penalty(x, tree, threshold, lam, bounds_low, bounds_high):
 
     dist, _ = tree.query(xr.reshape(1, -1), k=1)
     return float(lam * max(0.0, dist[0] - threshold))
+
+
+# ---------------------------------------------------------------------------
+# Per-variable zonal/regional/global weights
+# ---------------------------------------------------------------------------
+# zrg_w may carry an optional "per_variable" entry, {var: {zonal, regional,
+# global}}, overriding the block weights for those variables only (set from
+# weights.zrg_per_variable in the config). Every cost here is a sum over
+# variables, so the cost with overrides is the sum of plain calls, one per
+# group of variables sharing the same block weights. Without the entry the
+# wrapped function is called unchanged.
+def _with_per_variable_zrg(fn):
+    import functools
+    import inspect
+
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        ba = sig.bind(*args, **kwargs)
+        zrg_w = ba.arguments["zrg_w"]
+        per_var = zrg_w.get("per_variable") if isinstance(zrg_w, dict) else None
+        if not per_var:
+            return fn(*args, **kwargs)
+        var_w = ba.arguments["var_w"]
+        unknown = set(per_var) - set(var_w)
+        if unknown:
+            raise ValueError(f"zrg per_variable names {sorted(unknown)} are not in var_w")
+        base = {k: zrg_w[k] for k in ("zonal", "regional", "global")}
+        if ba.arguments.get("var_names") is None:
+            ba.arguments["var_names"] = list(var_w)
+        groups: Dict[tuple, Dict[str, float]] = {}
+        for vn, w in var_w.items():
+            z = {**base, **per_var.get(vn, {})}
+            groups.setdefault((z["zonal"], z["regional"], z["global"]), {})[vn] = w
+        total = 0.0
+        for (zw, rw, gw), sub in groups.items():
+            ba.arguments["var_w"] = sub
+            ba.arguments["zrg_w"] = {"zonal": zw, "regional": rw, "global": gw}
+            total += fn(*ba.args, **ba.kwargs)
+        return total
+
+    return wrapper
+
+
+zrg_cost_function_mae_weighted = _with_per_variable_zrg(zrg_cost_function_mae_weighted)
+zrg_cost_function_gaussian_nll = _with_per_variable_zrg(zrg_cost_function_gaussian_nll)
+zrg_cost_function_laplace = _with_per_variable_zrg(zrg_cost_function_laplace)
+zrg_cost_function_student_t = _with_per_variable_zrg(zrg_cost_function_student_t)
