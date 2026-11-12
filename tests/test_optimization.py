@@ -545,3 +545,18 @@ class TestOptimizeParallel:
         assert results.shape == (n_xstarts, n_params + 1)
         # top_rows: at most 10 indices
         assert len(top_rows) <= 10
+
+    def test_negative_costs_rank_lowest_first(self, tmp_path):
+        # A likelihood cost can be negative; the best start is the lowest cost,
+        # not the one closest to zero. Two basins: x=0 (cost -1), x=1 (cost -0.5).
+        def cost_fn(x):
+            x = float(np.asarray(x)[0])
+            return min(-1.0 + 20 * x ** 2, -0.5 + 20 * (x - 1) ** 2)
+
+        results, top_rows, _ = optimize_parallel(
+            cost_fn=cost_fn, n_params=1, bounds_low=0.0, bounds_high=1.0, seed=0,
+            n_xstarts=6, niter=1, method="L-BFGS-B", out_dir=str(tmp_path), max_workers=1,
+        )
+        costs = results[top_rows, -1]
+        assert np.all(np.diff(costs) >= 0)
+        assert np.isclose(costs[0], results[:, -1].min())

@@ -143,9 +143,11 @@ def main():
         ax.set_title(b)
         ax.spines[["top", "right"]].set_visible(False)
     axes[0].set_ylabel("normalized units (PPE sd)")
-    axes[1].legend(fontsize=8.5, frameon=False)
+    # legend above the panels, so it never sits on a bar label
+    fig.legend(*axes[1].get_legend_handles_labels(), loc="upper center",
+               bbox_to_anchor=(0.5, 0.93), ncol=3, fontsize=8.5, frameon=False)
     fig.suptitle(args.title or "Misfit at the optimum vs. surrogate uncertainty and PPE spread")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.88))
     fig.savefig(f"{args.out}_summary.png", dpi=150)
     print(f"Saved {args.out}_features.png and {args.out}_summary.png")
 

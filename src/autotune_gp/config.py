@@ -146,6 +146,13 @@ class OptimizeCfg:
     # more MAE-like robustness to a single large residual; as dof -> infinity
     # this recovers 'gaussian_gp_variance' exactly. Ignored otherwise.
     student_t_dof: float = 4.0
+    # Weight on the Student-t cost's 0.5*log(predictive variance) term
+    # (autotune_gp.cost.zrg_cost_function_student_t). 1 = true NLL (default);
+    # 0 = variance only scales the residuals, no reward for low variance.
+    logvar_weight: float = 1.0
+    # Basis + error covariance pickle for likelihood 'pca_gaussian'
+    # (scripts/build_pca_likelihood.py, autotune_gp.pca_likelihood).
+    pca_basis: Optional[str] = None
     # Extra penalty (see autotune_gp.cost.training_distance_penalty) added
     # regardless of likelihood, based on distance (in each parameter's own
     # bounds_from_data-rescaled space) from the candidate point to the
@@ -239,10 +246,17 @@ def _zrg_weights(w_raw):
     zrg = dict(w_raw["zrg"])
     per_var = w_raw.get("zrg_per_variable")
     if per_var:
-        for vn, blocks in per_var.items():
-            if set(blocks) != {"zonal", "regional", "global"}:
-                raise ValueError(f"weights.zrg_per_variable.{vn}: give exactly zonal, regional, global")
-        zrg["per_variable"] = {vn: {k: float(x) for k, x in b.items()} for vn, b in per_var.items()}
+        blk, feat = {"zonal", "regional", "global"}, {"zonal_weights", "regional_weights"}
+        out = {}
+        for vn, b in per_var.items():
+            extra = set(b) - blk - feat
+            if extra:
+                raise ValueError(f"weights.zrg_per_variable.{vn}: unknown keys {sorted(extra)}")
+            if set(b) & blk and not blk <= set(b):
+                raise ValueError(f"weights.zrg_per_variable.{vn}: give all of zonal, regional, "
+                                 "global or none of them")
+            out[vn] = {k: (float(x) if k in blk else [float(y) for y in x]) for k, x in b.items()}
+        zrg["per_variable"] = out
     return zrg
 
 
@@ -283,6 +297,8 @@ def load_config(path: str | Path) -> Config:
         variance_penalty_kappa=float(opt.get("variance_penalty_kappa", 0.0)),
         training_distance_penalty_lambda=float(opt.get("training_distance_penalty_lambda", 0.0)),
         student_t_dof=float(opt.get("student_t_dof", 4.0)),
+        logvar_weight=float(opt.get("logvar_weight", 1.0)),
+        pca_basis=opt.get("pca_basis", None),
         model_error=opt.get("model_error", None),
         obs_error=opt.get("obs_error", None),
     )

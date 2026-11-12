@@ -19,13 +19,27 @@ export PYTHONUNBUFFERED=1
 S=/pscratch/sd/r/rebassoo/autotune
 P=/global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/mf_prod_v2
 # TAG=n72iso (default) or n85; e.g.  sbatch --export=ALL,TAG=n85 jobs/plot_structural_error.sh
+# TAG=pcponly or pcpg0: the n=85 PCP-weight runs (optimum read from the run's
+# projection_data_seed50.pkl instead of a calibration log).
 TAG=${TAG:-n72iso}
+PY=/pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python
+GP85=$S/results_mf3_ne256_n85_studentt_dof4/mf_gp_trained.pkl
 case $TAG in
     n72iso) TOP=$P/preprocess_output_ne256_n85_was72; N=72 ;;
     n85)    TOP=$P/preprocess_output_ne256_n85;       N=85 ;;
+    pcponly) TOP=$P/preprocess_output_ne256_n85; N=85; WHAT="PCP only (other variables weight 0)" ;;
+    pcpg0)   TOP=$P/preprocess_output_ne256_n85; N=85; WHAT="PCP global weight 0 (zonal/regional 0.5)" ;;
     *) echo "unknown TAG=$TAG"; exit 1 ;;
 esac
-/pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/plot_structural_error.py \
+if [ -n "$WHAT" ]; then
+    THETA=$($PY -c "import pickle,json; print(json.dumps(pickle.load(open('$S/results_mf3_ne256_n85_$TAG/diagnostics/projection_data_seed50.pkl','rb'))['best_params_norm'].tolist()))")
+    $PY scripts/plot_structural_error.py --theta "$THETA" --gp-pkl $GP85 --top-dir $TOP \
+        --scalers-dir $P/preprocess_output_ne128_prod_v2 \
+        --title "Misfit at the optimum vs. PPE spread — n=85, $WHAT" \
+        --out docs/structural_error_n85_$TAG
+    exit
+fi
+$PY scripts/plot_structural_error.py \
     --calib-log $S/calib_${TAG}_E3_zeroglobal/calibration_log.json --round 0 \
     --gp-pkl $S/results_mf3_ne256_${TAG}_studentt_dof4/mf_gp_trained.pkl \
     --top-dir $TOP \

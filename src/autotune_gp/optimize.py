@@ -255,7 +255,7 @@ def optimize_parallel(cost_fn, n_params, bounds_low, bounds_high, seed, n_xstart
         missing = sorted(np.where(np.isnan(results).any(axis=1))[0].tolist())
         raise RuntimeError(f"Starts produced no result: {missing}")
 
-    top_rows = np.argsort(np.abs(results[:, -1]))[:10]
+    top_rows = np.argsort(results[:, -1])[:10]   # lowest cost first (costs can be negative)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

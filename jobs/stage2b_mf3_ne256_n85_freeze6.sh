@@ -18,6 +18,8 @@
 # FREEZE=fitted : frozen at the full 19-parameter run's best fit
 # FREEZE=default: frozen at the control-run values (default_params.pkl,
 #                 clipped to the sampled range)
+# FREEZE=random SEED=n: frozen at random values drawn uniformly inside the
+#                 sampled range (not the fit, not the default)
 # Compare best cost and the 13 free values with the 19-parameter run.
 cd /global/u2/r/rebassoo/work/2026_09_10_Autotuning-Repo/autotune
 export PYTHONUNBUFFERED=1
@@ -26,10 +28,16 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 S=/pscratch/sd/r/rebassoo/autotune
 FULL=$S/results_mf3_ne256_n85_studentt_dof4
-OUT=$S/results_mf3_ne256_n85_freeze6_${FREEZE:?set FREEZE=fitted or default}
+OUT=$S/results_mf3_ne256_n85_freeze6_${FREEZE:?set FREEZE=fitted, default or random}${SEED:+$SEED}
 VARY=qw2tune,length_fac,coeff_kh,coeff_km,lambda_low,lambda_high,spa_ccn_to_nc_factor,cldliq_to_ice_collection_factor,accretion_prefactor,max_total_ni,ice_sedimentation_factor,autoconversion_prefactor,autoconversion_qc_exponent
 EXTRA=()
 [ "$FREEZE" = fitted ] && EXTRA=(--freeze-from "$FULL")
+if [ "$FREEZE" = random ]; then
+    EXTRA=(--freeze-random "${SEED:?set SEED for FREEZE=random}")
+    mkdir -p "$OUT"
+    ln -sfn "$FULL/mf_gp_trained.pkl" "$OUT/mf_gp_trained.pkl"
+    cp -n "$S/results_mf3_ne256_n85_freeze6_default/default_params.pkl" "$OUT/"
+fi
 
 echo "Start: $(date)  FREEZE=$FREEZE"; START=$(date +%s)
 /pscratch/sd/r/rebassoo/conda/ESEm_env/bin/python scripts/run_two_stage.py \

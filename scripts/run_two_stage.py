@@ -419,9 +419,14 @@ def _model_error_var(cfg, var_names, Y_scalers, n_zonal, n_regions, n_snaps, log
 
 def _model_error_sig(cfg):
     """Checkpoint-signature entry; empty when unset so existing checkpoints stay valid."""
-    if not cfg.optimize.model_error and not cfg.optimize.obs_error:
-        return {}
-    return {"model_error": cfg.optimize.model_error, "obs_error": cfg.optimize.obs_error}
+    sig = {}
+    if cfg.optimize.model_error or cfg.optimize.obs_error:
+        sig = {"model_error": cfg.optimize.model_error, "obs_error": cfg.optimize.obs_error}
+    if cfg.optimize.logvar_weight != 1.0:
+        sig["logvar_weight"] = cfg.optimize.logvar_weight
+    if cfg.optimize.pca_basis:
+        sig["pca_basis"] = cfg.optimize.pca_basis
+    return sig
 
 
 def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
@@ -442,6 +447,8 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
     from scratch, so this is O(max_folds) in cost; for a large low-fidelity
     training set (e.g. ne32's 833 members) that dominates the walltime budget.
     """
+    if cfg.optimize.likelihood == "pca_gaussian":
+        raise NotImplementedError("likelihood pca_gaussian is implemented for the multi-fidelity path only")
     out_dir = Path(cfg.paths.preprocess_dir)
     kfold_pkl = out_dir / "kfold_data.pkl"
 
@@ -611,6 +618,7 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
                 var_floor=cfg.optimize.var_floor,
                 variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
                 dof=cfg.optimize.student_t_dof,
+                logvar_weight=cfg.optimize.logvar_weight,
             )
         elif cfg.optimize.likelihood == "laplace_gp_variance":
             base_cost = zrg_cost_function_laplace(
@@ -732,7 +740,9 @@ def run_stage2(cfg, _preprocess_pkls=None, max_folds=None):
 
 
 def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimize=False,
-                             vary_params=None, freeze_from=None):
+                             vary_params=None, freeze_from=None, freeze_random=None,
+                             eval_truth=None, mcmc_steps=0,
+                             mcmc_init_dcost=0.0):
     """Stage 2 with AR1 multi-fidelity GP (emukit + GPy).
 
     High-fidelity data comes from cfg.paths.preprocess_dir (same as the
@@ -1049,7 +1059,18 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         missing = [p for p in vary_params if p not in param_names]
         if missing:
             raise ValueError(f"--vary-params names not in the parameter set: {missing}")
-        if freeze_from:
+        # sampled range the GP actually covers (HF ∪ LF, the same support
+        # bounds_from_data uses)
+        _stacked = np.vstack([np.asarray(X_high_norm, dtype=float)]
+                             + [np.asarray(x, dtype=float) for x in _X_lower_norm])
+        _samp_lo, _samp_hi = _stacked.min(axis=0), _stacked.max(axis=0)
+        if freeze_random is not None:
+            # uniform in the normalized space (log space for log_params, as in the
+            # PPE design), inside the sampled range. The free slots are overwritten
+            # on every cost evaluation, so only the frozen values matter.
+            x_default_norm = np.random.default_rng(freeze_random).uniform(_samp_lo, _samp_hi)
+            _frozen_at = f"random values (seed {freeze_random})"
+        elif freeze_from:
             # freeze at another run's best fit (lowest-cost row of its results CSV)
             _csvs = sorted(Path(freeze_from).glob("results_*.csv"))
             if not _csvs:
@@ -1078,9 +1099,6 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         # evaluation ever asks the GP to extrapolate. A few control-run defaults
         # sit a hair past the PPE's sampled edge (they are round numbers at the
         # physical bounds); this snaps them to the nearest sampled value.
-        _stacked = np.vstack([np.asarray(X_high_norm, dtype=float)]
-                             + [np.asarray(x, dtype=float) for x in _X_lower_norm])
-        _samp_lo, _samp_hi = _stacked.min(axis=0), _stacked.max(axis=0)
         _clipped = np.clip(x_default_norm, _samp_lo, _samp_hi)
         for i in range(len(param_names)):
             if not np.isclose(_clipped[i], x_default_norm[i]):
@@ -1090,6 +1108,18 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
 
     _extra_var = _model_error_var(cfg, var_names, Y_scalers, n_zonal, n_regions, n_snaps,
                                   log=_ts)
+
+    _pca = None
+    if cfg.optimize.likelihood == "pca_gaussian":
+        from autotune_gp.pca_likelihood import pca_cost
+        if not cfg.optimize.pca_basis:
+            raise ValueError("likelihood 'pca_gaussian' needs optimize.pca_basis")
+        with open(cfg.optimize.pca_basis, "rb") as f:
+            _pca = pickle.load(f)
+        if tuple(_pca["feature_shape"]) != tuple(np.asarray(obs_norm).shape[1:]):
+            raise ValueError(f"pca_basis features {_pca['feature_shape']} != obs {np.asarray(obs_norm).shape}")
+        _ts(f"  PCA likelihood: K={_pca['k']} ({100 * _pca['ppe_var_frac']:.1f}% of PPE variance), "
+            f"basis {cfg.optimize.pca_basis}, excluded {_pca.get('excluded')}")
 
     def cost_fn(x):
         x = np.asarray(x, dtype=float)
@@ -1104,7 +1134,9 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
         m, v = gp.predict(full)
         if _extra_var is not None:
             v = v + _extra_var
-        if cfg.optimize.likelihood == "gaussian_gp_variance":
+        if _pca is not None:
+            base_cost = pca_cost(np.asarray(m, dtype=float) - np.asarray(obs_norm, dtype=float), _pca)
+        elif cfg.optimize.likelihood == "gaussian_gp_variance":
             base_cost = zrg_cost_function_gaussian_nll(
                 m, v, obs_norm, var_w, zrg_w, dy_w,
                 n_zonal=n_zonal, n_regions=n_regions, backend=backend,
@@ -1122,6 +1154,7 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                 var_floor=cfg.optimize.var_floor,
                 variance_penalty_kappa=cfg.optimize.variance_penalty_kappa,
                 dof=cfg.optimize.student_t_dof,
+                logvar_weight=cfg.optimize.logvar_weight,
             )
         elif cfg.optimize.likelihood == "laplace_gp_variance":
             base_cost = zrg_cost_function_laplace(
@@ -1188,6 +1221,60 @@ def run_stage2_multifidelity(cfg, top_k_params=None, skip_gp=False, skip_optimiz
                   **_model_error_sig(cfg)},
     )
     print(f"Done. Results: {csv_path}")
+
+    if eval_truth:
+        # Twin experiment: the cost and the surrogate's prediction at the parameters
+        # that produced the target, next to the best optimum. If the truth costs more
+        # than the optimum, the remaining parameter error is the surrogate's, not the
+        # optimizer's.
+        if vary_idx is not None:
+            raise ValueError("--eval-truth needs all parameters free (no --vary-params).")
+        with open(eval_truth, "rb") as f:
+            _truth = pickle.load(f)
+        if list(_truth["params"]) != list(param_names):
+            raise ValueError(f"truth parameters {_truth['params']} != {param_names}")
+        _pts = {"truth": np.asarray(X_sc.transform(np.asarray(_truth["x_phys"], float)[None, :]),
+                                    float)[0],
+                "best": np.asarray(results[top_rows[0], :-1], float)}
+        _obs = np.squeeze(np.asarray(obs_norm, float))
+        _ev = {"obs_norm": _obs, "var_names": list(var_names), "member": _truth["member"]}
+        for _k, _x in _pts.items():
+            _m, _v = gp.predict(_x)
+            _m = np.asarray(_m, float).reshape(_obs.shape)
+            _v = np.asarray(_v, float).reshape(_obs.shape)
+            _ev[_k] = {"x_norm": _x, "cost": float(cost_fn(_x)), "mean": _m, "var": _v}
+            _ts(f"  eval {_k}: cost {_ev[_k]['cost']:.6f}; RMS (mean - target) in PPE-sd units "
+                + ", ".join(f"{vn} {np.sqrt(np.mean((_m[..., j] - _obs[..., j]) ** 2)):.3f}"
+                            for j, vn in enumerate(var_names)))
+        _ev_dir = Path(cfg.paths.output_dir) / "diagnostics"
+        _ev_dir.mkdir(parents=True, exist_ok=True)
+        with open(_ev_dir / "eval_truth.pkl", "wb") as f:
+            pickle.dump(_ev, f)
+        _ts(f"  Saved {_ev_dir / 'eval_truth.pkl'}")
+
+    if mcmc_steps:
+        if _pca is None:
+            raise ValueError("--mcmc-steps needs likelihood pca_gaussian (a true NLL)")
+        from autotune_gp.posterior import sample_posterior
+        # start walkers at every multi-start endpoint within mcmc_init_dcost of the best
+        # cost (a log-likelihood difference), so each competitive mode is entered
+        _c = results[:, -1]
+        _init = results[_c <= _c.min() + mcmc_init_dcost, :-1] if mcmc_init_dcost else \
+            results[top_rows[:1], :-1]
+        _ts(f"=== Posterior sampling: 64 walkers x {mcmc_steps} steps, started at "
+            f"{len(_init)} optimum endpoint(s) ===")
+        _post = sample_posterior(cost_fn, _init, bounds_low, bounds_high,
+                                 n_walkers=64, n_steps=mcmc_steps,
+                                 n_proc=cfg.optimize.max_workers or 32, seed=cfg.optimize.seed)
+        _post.update(param_names=[param_names[i] for i in vary_idx] if vary_idx is not None
+                     else list(param_names), bounds=(np.asarray(bounds_low), np.asarray(bounds_high)))
+        _post["init_points"] = _init
+        _pdir = Path(cfg.paths.output_dir) / "diagnostics"
+        _pdir.mkdir(parents=True, exist_ok=True)
+        _pfile = _pdir / f"posterior_{mcmc_steps}steps.pkl"
+        with open(_pfile, "wb") as f:
+            pickle.dump(_post, f)
+        _ts(f"  acceptance {np.mean(_post['acceptance']):.2f}; saved {_pfile}")
 
     # Post-hoc parameter-uncertainty report (inverse-Hessian covariance at the
     # best-found point). Must run *before* the vary_idx results-expansion below:
@@ -1313,6 +1400,21 @@ def main():
                    help="With --vary-params: freeze the other parameters at the best "
                         "fit (lowest-cost row of results_*.csv) of RESULTS_DIR instead "
                         "of the control-run default.")
+    p.add_argument("--freeze-random", type=int, default=None, metavar="SEED",
+                   help="With --vary-params: freeze the other parameters at random values "
+                        "drawn uniformly inside the sampled range, instead of the control-"
+                        "run default. Mutually exclusive with --freeze-from.")
+    p.add_argument("--mcmc-steps", type=int, default=0,
+                   help="After optimizing, sample the posterior with emcee (64 walkers, this many "
+                        "steps) starting at the best fit; needs a true NLL cost (likelihood "
+                        "pca_gaussian). Writes diagnostics/posterior.pkl.")
+    p.add_argument("--mcmc-init-dcost", type=float, default=0.0,
+                   help="Start the MCMC walkers at every multi-start endpoint whose cost is "
+                        "within this of the best (default 0: the best point only).")
+    p.add_argument("--eval-truth", default=None, metavar="TRUTH_PKL",
+                   help="Twin experiments: also evaluate the cost and the prediction at the "
+                        "true parameters in this truth.pkl (scripts/make_twin_experiment.py) "
+                        "and at the best optimum; writes diagnostics/eval_truth.pkl.")
     p.add_argument("--sf-backend", choices=["esem", "gpy"], default=None,
                    help="(Single-fidelity only) GP library: 'esem' (default, "
                         "GPflow joint model) or 'gpy' (independent per-feature "
@@ -1342,6 +1444,8 @@ def main():
         raise ValueError("--top-k-params and --vary-params are mutually exclusive.")
     if args.freeze_from and not vary_params:
         raise ValueError("--freeze-from only applies with --vary-params.")
+    if args.freeze_random is not None and (not vary_params or args.freeze_from):
+        raise ValueError("--freeze-random needs --vary-params and excludes --freeze-from.")
     if not cfg.paths.preprocess_dir:
         raise ValueError("cfg.paths.preprocess_dir must be set in the config.")
 
@@ -1355,7 +1459,11 @@ def main():
                                      skip_gp=args.skip_gp,
                                      skip_optimize=args.skip_optimize,
                                      vary_params=vary_params,
-                                     freeze_from=args.freeze_from)
+                                     freeze_from=args.freeze_from,
+                                     freeze_random=args.freeze_random,
+                                     eval_truth=args.eval_truth,
+                                     mcmc_steps=args.mcmc_steps,
+                                     mcmc_init_dcost=args.mcmc_init_dcost)
         else:
             run_stage2(cfg, max_folds=args.kfold_folds)
     else:

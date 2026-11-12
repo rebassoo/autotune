@@ -72,3 +72,57 @@ def test_unknown_variable_rejected():
     p, v, o = _data()
     with pytest.raises(ValueError):
         _call(zrg_cost_function_student_t, VAR_W, {**BASE, "per_variable": {"TLWP": PCP_Z}}, p, v, o)
+
+
+ZW = [0.0, 1.0, 1.0, 0.0]          # mask zonal bands 0 and 3
+RW = [1.0, 0.0]                    # mask region 1
+
+
+@pytest.mark.parametrize("fn", FNS)
+def test_per_variable_feature_mask(fn):
+    """A masked feature has no effect; an unmasked variable keeps the shared weights."""
+    p, v, o = _data()
+    zrg = {**BASE, "per_variable": {"OSR": {"zonal_weights": ZW, "regional_weights": RW}}}
+    got = _call(fn, VAR_W, zrg, p, v, o)
+    p2 = p.copy()
+    j = NAMES.index("OSR")
+    p2[0, [0, 3, N_Z + 1], j] += 50.0          # move only the masked OSR features
+    assert _call(fn, VAR_W, zrg, p2, v, o) == pytest.approx(got, rel=1e-12)
+    want = (_call(fn, {"PCP": 0.3, "OLR": 0.3}, BASE, p, v, o)
+            + _call_fw(fn, {"OSR": 0.1}, BASE, p, v, o, ZW, RW))
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def _call_fw(fn, var_w, zrg_w, preds, var, obs, zw, rw):
+    kw = dict(dy_w={"ANN": 1.0}, n_zonal=N_Z, n_regions=N_R,
+              backend=get_backend("numpy", "cpu"), var_names=NAMES,
+              zonal_weights=zw, regional_weights=rw)
+    if fn is zrg_cost_function_mae_weighted:
+        return fn(preds, obs, var_w, zrg_w, **kw)
+    return fn(preds, var, obs, var_w, zrg_w, **kw)
+
+
+def test_config_folds_feature_weights():
+    z = _zrg_weights({"zrg": BASE, "zrg_per_variable": {
+        "SLP": {"zonal": 1 / 3, "regional": 1 / 3, "global": 0.0},
+        "OSR": {"zonal_weights": ZW}}})
+    assert z["per_variable"]["OSR"] == {"zonal_weights": ZW}
+    assert z["per_variable"]["SLP"]["global"] == 0.0
+    with pytest.raises(ValueError):
+        _zrg_weights({"zrg": BASE, "zrg_per_variable": {"OSR": {"zonal_weight": ZW}}})
+
+
+def test_student_t_logvar_weight_drops_only_the_log_variance_term():
+    # Equal variances everywhere: the 0.5*log(v) term is the same constant at every
+    # location, so dropping it shifts the cost by exactly that constant (the block
+    # weights average to 1); unequal variances: weight 0 no longer rewards low v.
+    p, _, o = _data()
+    kw = dict(var_w=VAR_W, zrg_w=BASE, dy_w={"ANN": 1.0}, n_zonal=N_Z, n_regions=N_R,
+              backend=get_backend("numpy", "cpu"), var_names=NAMES)
+    fn = zrg_cost_function_student_t
+    v = np.full_like(p, 0.25)
+    full, nolog = fn(p, v, o, **kw), fn(p, v, o, logvar_weight=0.0, **kw)
+    assert full - nolog == pytest.approx(0.5 * np.log(0.25) * sum(VAR_W.values()), rel=1e-12)
+    # with the residual held at zero, weight 0 makes the cost independent of v
+    assert fn(o, np.full_like(p, 0.1), o, logvar_weight=0.0, **kw) == \
+        pytest.approx(fn(o, np.full_like(p, 0.9), o, logvar_weight=0.0, **kw), rel=1e-12)

@@ -555,6 +555,7 @@ def zrg_cost_function_student_t(
     var_floor: float = 1e-6,
     variance_penalty_kappa: float = 0.0,
     dof: float = 4.0,
+    logvar_weight: float = 1.0,
 ) -> float:
     """
     ZRG Student-t negative-log-likelihood cost function, using the GP's own
@@ -577,6 +578,11 @@ def zrg_cost_function_student_t(
     zrg_cost_function_gaussian_nll's `0.5*diff**2/var_clipped +
     0.5*log(2*pi*var_clipped)` (the standard Student-t -> Gaussian limit);
     dof is a fixed hyperparameter here (`optimize.student_t_dof`), not fit.
+
+    logvar_weight multiplies the 0.5*log(var_clipped) term (default 1: the true
+    NLL). 0 drops it: the surrogate variance then only scales the residuals, and
+    the optimizer is no longer rewarded for moving to where the surrogate is
+    confident (low predictive variance) when the fit there is no better.
 
     Motivation: under the Gaussian NLL, the fit term grows quadratically in
     the residual, so a single hard-to-fit variable/location (e.g. OLR, which
@@ -657,7 +663,7 @@ def zrg_cost_function_student_t(
         def _t_nll_mean(po, pp, pv, weights=None) -> float:
             var_c = np.maximum(pv, var_floor)
             diff2 = (pp - po) ** 2
-            term  = (0.5 * np.log(var_c)
+            term  = (logvar_weight * 0.5 * np.log(var_c)
                      + 0.5 * (dof + 1.0) * np.log1p(diff2 / (dof * var_c))
                      + const_dof + variance_penalty_kappa * var_c)
             if weights is not None:
@@ -667,7 +673,7 @@ def zrg_cost_function_student_t(
         def _t_nll_scalar(o, p, v) -> float:
             var_c = max(float(v), var_floor)
             diff2 = (float(p) - float(o)) ** 2
-            return float(0.5 * np.log(var_c)
+            return float(logvar_weight * 0.5 * np.log(var_c)
                          + 0.5 * (dof + 1.0) * np.log1p(diff2 / (dof * var_c))
                          + const_dof + variance_penalty_kappa * var_c)
 
@@ -677,7 +683,7 @@ def zrg_cost_function_student_t(
             po, pp, pv = cp.asarray(po), cp.asarray(pp), cp.asarray(pv)
             var_c = cp.maximum(pv, var_floor)
             diff2 = (pp - po) ** 2
-            term  = (0.5 * cp.log(var_c)
+            term  = (logvar_weight * 0.5 * cp.log(var_c)
                      + 0.5 * (dof + 1.0) * cp.log1p(diff2 / (dof * var_c))
                      + const_dof + variance_penalty_kappa * var_c)
             if weights is not None:
@@ -687,7 +693,7 @@ def zrg_cost_function_student_t(
         def _t_nll_scalar(o, p, v) -> float:
             var_c = max(float(v), var_floor)
             diff2 = (float(p) - float(o)) ** 2
-            return float(0.5 * float(cp.log(var_c))
+            return float(logvar_weight * 0.5 * float(cp.log(var_c))
                          + 0.5 * (dof + 1.0) * float(cp.log1p(diff2 / (dof * var_c)))
                          + const_dof + variance_penalty_kappa * var_c)
 
@@ -700,7 +706,7 @@ def zrg_cost_function_student_t(
             pv = torch.as_tensor(pv, device=dev)
             var_c = torch.clamp(pv, min=var_floor)
             diff2 = (pp - po) ** 2
-            term  = (0.5 * torch.log(var_c)
+            term  = (logvar_weight * 0.5 * torch.log(var_c)
                      + 0.5 * (dof + 1.0) * torch.log1p(diff2 / (dof * var_c))
                      + const_dof + variance_penalty_kappa * var_c)
             if weights is not None:
@@ -710,7 +716,7 @@ def zrg_cost_function_student_t(
         def _t_nll_scalar(o, p, v) -> float:
             var_c = max(float(v), var_floor)
             diff2 = (float(p) - float(o)) ** 2
-            return float(0.5 * math.log(var_c)
+            return float(logvar_weight * 0.5 * math.log(var_c)
                          + 0.5 * (dof + 1.0) * math.log1p(diff2 / (dof * var_c))
                          + const_dof + variance_penalty_kappa * var_c)
 
@@ -857,16 +863,27 @@ def _with_per_variable_zrg(fn):
         if unknown:
             raise ValueError(f"zrg per_variable names {sorted(unknown)} are not in var_w")
         base = {k: zrg_w[k] for k in ("zonal", "regional", "global")}
+        # per-feature weights: a variable's own list replaces the shared one
+        tup = lambda w: None if w is None else tuple(float(x) for x in w)
+        base["zonal_weights"] = tup(ba.arguments.get("zonal_weights"))
+        base["regional_weights"] = tup(ba.arguments.get("regional_weights"))
         if ba.arguments.get("var_names") is None:
             ba.arguments["var_names"] = list(var_w)
+        keys = ("zonal", "regional", "global", "zonal_weights", "regional_weights")
         groups: Dict[tuple, Dict[str, float]] = {}
         for vn, w in var_w.items():
-            z = {**base, **per_var.get(vn, {})}
-            groups.setdefault((z["zonal"], z["regional"], z["global"]), {})[vn] = w
+            over = dict(per_var.get(vn, {}))
+            for k in ("zonal_weights", "regional_weights"):
+                if k in over:
+                    over[k] = tup(over[k])
+            z = {**base, **over}
+            groups.setdefault(tuple(z[k] for k in keys), {})[vn] = w
         total = 0.0
-        for (zw, rw, gw), sub in groups.items():
+        for (zw, rw, gw, zfw, rfw), sub in groups.items():
             ba.arguments["var_w"] = sub
             ba.arguments["zrg_w"] = {"zonal": zw, "regional": rw, "global": gw}
+            ba.arguments["zonal_weights"] = None if zfw is None else list(zfw)
+            ba.arguments["regional_weights"] = None if rfw is None else list(rfw)
             total += fn(*ba.args, **ba.kwargs)
         return total
 
