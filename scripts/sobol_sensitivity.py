@@ -79,6 +79,10 @@ def main():
                     help="Saltelli base sample size (power of 2); points = n_base*(d+2).")
     ap.add_argument("--chunk", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--box-bounds", default=None,
+                    help="npz with lo, hi (normalized) for the sampled box, so surrogates trained "
+                         "on different levels are analysed over the same box (default: the "
+                         "range of the surrogate's own training inputs)")
     ap.add_argument("--out", required=True, help="Output directory.")
     args = ap.parse_args()
     out = Path(args.out)
@@ -94,6 +98,9 @@ def main():
     # search box = the sampled range over all levels (optimize.bounds_from_data)
     X_all = np.vstack([np.asarray(x, float) for x in gp.X_levels])
     lo, hi = np.clip(X_all.min(0), 0, 1), np.clip(X_all.max(0), 0, 1)
+    if args.box_bounds:
+        _bb = np.load(args.box_bounds)
+        lo, hi = np.asarray(_bb["lo"], float), np.asarray(_bb["hi"], float)
     theta = _best_theta(args.theta_from)
     fixed = {n: float(theta[names.index(n)]) for n in args.fix}
     free = [i for i, n in enumerate(names) if n not in fixed]

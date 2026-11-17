@@ -56,6 +56,11 @@ def main() -> None:
                          "holdout so R^2 is computed on identically scaled targets.")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--train-top", type=int, default=0, metavar="N",
+                    help="Learning curve: train each fold on a random N of its training members "
+                         "(drawn exactly as evaluate_nfidelity_holdout.py --train-top does, so the "
+                         "same seed gives the same subsets). 0 = all.")
+    ap.add_argument("--subset-seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--limit-features", type=int, default=0)
     ap.add_argument("--out-dir", required=True)
@@ -85,7 +90,14 @@ def main() -> None:
     from sklearn.model_selection import KFold
     k = min(args.folds, n_top)
     kf = KFold(n_splits=k, shuffle=True, random_state=args.seed)
-    jobs = [(i, tr, te, X, Y) for i, (tr, te) in enumerate(kf.split(X))]
+    splits = list(kf.split(X))
+    if args.train_top:
+        rng = np.random.default_rng(args.subset_seed)
+        if args.train_top > min(len(tr) for tr, _ in splits):
+            raise SystemExit(f"--train-top {args.train_top} exceeds a fold's training members")
+        splits = [(np.sort(rng.choice(tr, args.train_top, replace=False)), te) for tr, te in splits]
+        print(f"  learning curve: {args.train_top} members trained per fold (subset seed {args.subset_seed})")
+    jobs = [(i, tr, te, X, Y) for i, (tr, te) in enumerate(splits)]
     print(f"  {k} folds ({[len(j[2]) for j in jobs]} held out per fold), seed {args.seed}")
 
     from concurrent.futures import ProcessPoolExecutor, as_completed

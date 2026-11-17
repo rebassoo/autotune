@@ -27,9 +27,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from score_twin import clusters   # noqa: E402
 
 S = Path("/pscratch/sd/r/rebassoo/autotune")
-INK, BLUE, RED, BAND = "#1a1a1a", "#2a6fdb", "#d9542b", "#eceef1"
+INK, BLUE, RED, BAND, GREY = "#1a1a1a", "#2a6fdb", "#d9542b", "#eceef1", "#9aa0a6"
 POST_LIGHT, POST_DARK = "#c9d8f2", "#7fa3e0"
 LAMBDAS = ("lambda_low", "lambda_high")
+
+
+def hist_grid(s, xt, best, lo, hi, q5, q95, names, order, imp, inside, member, footer, out):
+    """4 x 5 grid: each parameter's 1-D posterior histogram over its sampled (prior) range."""
+    fig, axes = plt.subplots(4, 5, figsize=(17, 12.5))
+    for a, j in zip(axes.flat, order):
+        bins = np.linspace(lo[j], hi[j], 41)
+        a.axhline(1 / (hi[j] - lo[j]), color=GREY, lw=1.2, ls=":", zorder=1)
+        a.axvspan(q5[j], q95[j], ymax=0.035, color=INK, alpha=0.35, lw=0, zorder=1)
+        a.hist(s[:, j], bins=bins, density=True, color=POST_DARK, alpha=0.85, lw=0, zorder=2)
+        a.axvline(best[j], color=BLUE, lw=1.6, ls="--", zorder=3)
+        a.axvline(xt[j], color=INK if inside[j] else RED, lw=2.2, zorder=4)
+        n = names[j]
+        sob = f"Sobol {imp[n]:.2f}" if n in imp and n not in LAMBDAS else "no Sobol index"
+        a.set_title(f"{n.replace('_factor', '')}\n({sob})", fontsize=9.5,
+                    color=INK if inside[j] else RED)
+        a.set_xlim(lo[j], hi[j])
+        a.set_yticks([])
+        a.tick_params(labelsize=8)
+        a.spines[["top", "right", "left"]].set_visible(False)
+    for a in axes.flat[len(order):]:
+        a.axis("off")
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    handles = [Patch(color=POST_DARK, alpha=0.85, label="posterior (MCMC samples)"),
+               Patch(color=INK, alpha=0.35, label="posterior 5–95% (bar on the axis)"),
+               Line2D([], [], color=GREY, lw=1.2, ls=":", label="flat prior (no information)"),
+               Line2D([], [], color=INK, lw=2.2, label="true value"),
+               Line2D([], [], color=RED, lw=2.2, label="true value outside 5–95%"),
+               Line2D([], [], color=BLUE, lw=1.6, ls="--", label="best fit (lowest cost)")]
+    axes.flat[-1].legend(handles=handles, loc="center", frameon=False, fontsize=10)
+    fig.suptitle(f"{member} twin (3-level surrogate, PCA likelihood): 1-D posteriors and true parameters — "
+                 f"true value inside 5–95% for {int(inside.sum())} of {len(names)}",
+                 x=0.01, ha="left", fontsize=13, weight="bold", color=INK)
+    fig.text(0.01, 0.005, footer + "\nx: normalized value (0–1 over the declared range), each panel spanning the range the PPE "
+             "sampled (the prior box). Panels ordered by "
+             "largest output Sobol index.", fontsize=8.5, color="#6b6f76")
+    fig.tight_layout(rect=(0, 0.035, 1, 0.965))
+    fig.savefig(out, dpi=150, facecolor="white")
+    print(f"Saved {out}: inside {int(inside.sum())}/{len(names)}")
 
 
 def main():
@@ -38,6 +78,8 @@ def main():
     ap.add_argument("--twin", required=True, help="e.g. m060_3level")
     ap.add_argument("--posterior", default="posterior_2000steps.pkl")
     ap.add_argument("--sobol", default=str(S / "sobol_n85" / "sobol_summary.csv"))
+    ap.add_argument("--kind", choices=["ranges", "hist"], default="ranges",
+                    help="ranges: one row per parameter; hist: a 4x5 grid of 1-D posterior histograms")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     L = lambda p: pickle.load(open(p, "rb"))
@@ -67,6 +109,13 @@ def main():
     y = np.arange(len(order))
     inside = (xt >= q5) & (xt <= q95)
 
+    member = args.twin.split("_")[0]
+    footer = (f"MCMC: 64 walkers × {n_steps} steps, second half kept ({len(s):,} samples); longest "
+              f"autocorrelation time {tau:.0f} steps ({n_steps / tau:.0f} × τ; ≥ 50 × τ is the usual target).")
+    if args.kind == "hist":
+        hist_grid(s, xt, best, lo, hi, q5, q95, names, order[::-1], imp, inside, member, footer, args.out)
+        return
+
     fig, ax = plt.subplots(figsize=(11, 9))
     ax.barh(y, (hi - lo)[order], left=lo[order], height=0.7, color=BAND, lw=0, zorder=0,
             label="range sampled by the PPE (prior)")
@@ -91,13 +140,10 @@ def main():
     ax.set_axisbelow(True)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(fontsize=8.5, frameon=False, loc="upper center", bbox_to_anchor=(0.45, -0.07), ncol=3)
-    member = args.twin.split("_")[0]
     ax.set_title(f"{member} twin (3-level surrogate, PCA likelihood): posterior vs. true parameters\n"
                  f"true value inside the posterior 5–95% range for {int(inside.sum())} of {len(names)} "
                  "parameters", loc="left", fontsize=11)
-    fig.text(0.01, 0.005, f"MCMC: 64 walkers × {n_steps} steps, second half kept; longest autocorrelation "
-             f"time {tau:.0f} steps ({n_steps / tau:.0f} × τ; ≥ 50 × τ is the usual target). "
-             "In brackets: largest output Sobol index.", fontsize=8, color="#6b6f76")
+    fig.text(0.01, 0.005, footer + " In brackets: largest output Sobol index.", fontsize=8, color="#6b6f76")
     fig.tight_layout(rect=(0, 0.02, 1, 1))
     fig.savefig(args.out, dpi=150, facecolor="white")
     print(f"Saved {args.out}: inside {int(inside.sum())}/{len(names)}")

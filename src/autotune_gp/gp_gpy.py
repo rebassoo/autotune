@@ -84,6 +84,15 @@ class SingleFidelityGPyWrapper:
             self._models.append(var_models)
 
     # ------------------------------------------------------------------
+    @property
+    def X_levels(self):
+        """Training inputs as a one-level list (the N-fidelity wrapper's interface)."""
+        return [self.X]
+
+    def predict_batch(self, X: np.ndarray):
+        """Same as predict; the batch name the multi-fidelity wrappers use."""
+        return self.predict(X)
+
     def predict(self, x: np.ndarray):
         """Predict at all features for one or a batch of parameter sets.
 

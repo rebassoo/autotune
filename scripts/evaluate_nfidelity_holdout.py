@@ -192,6 +192,13 @@ def main() -> None:
                          "prediction at genuinely novel parameters. Use without "
                          "--warm-start-gp: a warm start fitted on all lower-level "
                          "members carries those points in its hyperparameters.")
+    ap.add_argument("--train-top", type=int, default=0, metavar="N",
+                    help="Learning curve: in every fold, train on a random N of that fold's "
+                         "top-level training members (the held-out members and folds are "
+                         "unchanged, so every N is scored on the same predictions). 0 = all.")
+    ap.add_argument("--subset-seed", type=int, default=0,
+                    help="Seed for the --train-top subsets (repeat with others to see the "
+                         "spread from which members are chosen).")
     ap.add_argument("--folds", type=int, default=4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--workers", type=int, default=0, help="0 = min(folds, cpu_count)")
@@ -263,10 +270,19 @@ def main() -> None:
     from sklearn.model_selection import KFold
     k = min(args.folds, n_top)
     kf = KFold(n_splits=k, shuffle=True, random_state=args.seed)
+    splits = list(kf.split(X_top))
+    if args.train_top:
+        rng = np.random.default_rng(args.subset_seed)
+        if args.train_top > min(len(tr) for tr, _ in splits):
+            raise SystemExit(f"--train-top {args.train_top} exceeds a fold's "
+                             f"{min(len(tr) for tr, _ in splits)} training members")
+        splits = [(np.sort(rng.choice(tr, args.train_top, replace=False)), te) for tr, te in splits]
+        print(f"  learning curve: {args.train_top} top members trained per fold "
+              f"(subset seed {args.subset_seed})")
     jobs = [(i, tr, te, X_levels, Y_levels, X_top, Y_top, args.top_kernel,
              args.warm_start_gp, warm_order, not args.no_freeze_lower,
              args.strict_holdout)
-            for i, (tr, te) in enumerate(kf.split(X_top))]
+            for i, (tr, te) in enumerate(splits)]
     if args.strict_holdout:
         print("  STRICT holdout: lower-level members at held-out parameter points "
               "are removed from training too")
@@ -306,10 +322,15 @@ def main() -> None:
 
     # ---- baseline 2: the next level down's own simulation at the same params
     rows_b2 = None
-    if top["names"] and lower[-1]["names"]:
-        low_idx = {_member_index(n): i for i, n in enumerate(lower[-1]["names"])}
-        pairs = [(i, low_idx[_member_index(n)]) for i, n in enumerate(top["names"])
-                 if _member_index(n) in low_idx]
+    if len(lower[-1]["X"]):
+        # Pair by parameter values, not member number: ensembles from different
+        # batches reuse member numbers for different parameters (e.g. ne256
+        # "nearbal" m201-m214 vs the older ne128 m201-m214).
+        Xl = np.asarray(lower[-1]["X"], float)
+        Xh = np.asarray(top["X"], float)
+        scale = np.maximum(np.abs(Xh).max(axis=0), 1e-30)
+        dist = (np.abs(Xh[:, None, :] - Xl[None]) / scale).max(axis=2)
+        pairs = [(i, int(dist[i].argmin())) for i in range(len(Xh)) if dist[i].min() < 1e-6]
         if len(pairs) >= 3:
             ti = [p[0] for p in pairs]; li = [p[1] for p in pairs]
             rows_b2 = _score(Y_top[ti], Y_levels[-1][li], var_names, y_scalers,
@@ -322,6 +343,8 @@ def main() -> None:
                      "rows_mf": rows_mf, "rows_2level": rows_b1, "rows_lowsim": rows_b2,
                      "top_dir": top["dir"], "level_dirs": [l["dir"] for l in lower],
                      "folds": k, "seed": args.seed, "n_top": n_top,
+                     "train_top": args.train_top or int(min(len(tr) for tr, _ in splits)),
+                     "subset_seed": args.subset_seed,
                      "strict_holdout": args.strict_holdout,
                      "top_kernel": args.top_kernel,
                      "freeze_lower": not args.no_freeze_lower}, f)

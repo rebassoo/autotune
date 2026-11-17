@@ -189,6 +189,11 @@ class MultiFidelityGPWrapper:
         """
         return self._predict_batch_at_fidelity(X, fidelity=1)
 
+    @property
+    def X_levels(self):
+        """Training inputs low fidelity first (the N-fidelity wrapper's interface)."""
+        return [self.X_low, self.X_high]
+
     def predict_lf_batch(self, X: np.ndarray):
         """Predict at low fidelity for a batch. Same signature as predict_batch()."""
         return self._predict_batch_at_fidelity(X, fidelity=0)
