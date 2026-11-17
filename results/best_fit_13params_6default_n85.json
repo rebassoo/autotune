@@ -1,0 +1,75 @@
+{
+  "description": "Best fit of 13 parameters with the other 6 fixed at their default (control-run) values. 3-level multi-fidelity GP surrogate (ne256 n=85 + ne128 + ne32), Student-t cost (dof 4), annual-mean targets (IMERG PCP, OSR, OLR, TLWP); 40 optimizer starts, 35 converged to this optimum.",
+  "cost_student_t": 0.3954,
+  "reference_costs": {
+    "full_19_parameter_fit": 0.199,
+    "19_parameter_fit_with_6_reset_to_default_no_refit": 0.48,
+    "all_19_at_default": 2.45
+  },
+  "run_dir": "/pscratch/sd/r/rebassoo/autotune/results_mf3_ne256_n85_freeze6_default",
+  "fitted_parameters": {
+    "qw2tune": {
+      "value": 1.88666,
+      "default": 1.0
+    },
+    "length_fac": {
+      "value": 0.72355,
+      "default": 0.5
+    },
+    "coeff_kh": {
+      "value": 0.0402576,
+      "default": 0.1
+    },
+    "coeff_km": {
+      "value": 0.0300432,
+      "default": 0.1,
+      "note": "at the lower edge of the range sampled by the PPE"
+    },
+    "lambda_low": {
+      "value": 0.000109255,
+      "default": 0.001,
+      "note": "at the lower edge of the range sampled by the PPE"
+    },
+    "lambda_high": {
+      "value": 0.0398244,
+      "default": 0.08
+    },
+    "spa_ccn_to_nc_factor": {
+      "value": 1226.38,
+      "default": 2000.0
+    },
+    "cldliq_to_ice_collection_factor": {
+      "value": 0.181014,
+      "default": 0.5
+    },
+    "accretion_prefactor": {
+      "value": 25.3352,
+      "default": 67.0
+    },
+    "max_total_ni": {
+      "value": 1797850.0,
+      "default": 740000.0,
+      "note": "at the upper edge of the range sampled by the PPE"
+    },
+    "ice_sedimentation_factor": {
+      "value": 1.80448,
+      "default": 1.0
+    },
+    "autoconversion_prefactor": {
+      "value": 1403.92,
+      "default": 1350.0
+    },
+    "autoconversion_qc_exponent": {
+      "value": 2.47148,
+      "default": 2.47
+    }
+  },
+  "fixed_at_default": {
+    "thl2tune": 1.0,
+    "c_diag_3rd_mom": 7.0,
+    "rain_to_ice_collection_factor": 1.0,
+    "deposition_nucleation_exponent": 0.304,
+    "rain_selfcollection_breakup_diameter": 0.00028,
+    "autoconversion_radius": 2.5e-05
+  }
+}
